@@ -1,0 +1,48 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci || npm install
+        env:
+          npm_config_build_from_source: true
+
+      - name: Rebuild native modules
+        run: npx electron-builder install-app-deps
+
+      - name: Build renderer
+        run: npm run build:renderer
+
+      - name: Build Electron (NSIS + Portable)
+        run: npx electron-builder --win --config build/electron-builder.yml
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Difrag-Windows-4821
+          path: |
+            dist/Difrag-Setup-*.exe
+            dist/Difrag-Portable-*.exe
+          if-no-files-found: warn
+
+      - name: List dist
+        run: dir dist
+        shell: cmd

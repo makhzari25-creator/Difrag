@@ -1,0 +1,30 @@
+appId: com.difrag.app
+productName: Difrag
+copyright: Copyright Difrag
+directories:
+  output: dist
+  buildResources: build
+files:
+  - electron/**/*
+  - renderer/dist/**/*
+  - shared/**/*
+  - package.json
+  - "!**/*.{md,map}"
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+  artifactName: Difrag-Setup-${version}-4821.${ext}
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Difrag
+  artifactName: Difrag-Setup-${version}-4821.exe
+portable:
+  artifactName: Difrag-Portable-${version}-4821.exe
+extraMetadata:
+  buildId: "4821"
