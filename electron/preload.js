@@ -1,0 +1,27 @@
+const { contextBridge, ipcRenderer } = require('electron');
+contextBridge.exposeInMainWorld('difrag', {
+  getDataDir: () => ipcRenderer.invoke('get-data-dir'),
+  getBuildId: () => ipcRenderer.invoke('get-build-id'),
+  log: (level, msg, meta) => ipcRenderer.invoke('log', level, msg, meta),
+  upsertUser: (profile) => ipcRenderer.invoke('upsert-user', profile),
+  logAuthEvent: (event) => ipcRenderer.invoke('log-auth-event', event),
+  importExcel: (opts) => ipcRenderer.invoke('import-excel', opts),
+  getActiveExcel: () => ipcRenderer.invoke('get-active-excel'),
+  getLocations: (versionId) => ipcRenderer.invoke('get-locations', versionId),
+  getProductByBarcode: (opts) => ipcRenderer.invoke('get-product-by-barcode', opts),
+  createSession: (data) => ipcRenderer.invoke('create-session', data),
+  updateSession: (data) => ipcRenderer.invoke('update-session', data),
+  getSessions: (filters) => ipcRenderer.invoke('get-sessions', filters),
+  getActiveSessionForUser: (userId) => ipcRenderer.invoke('get-active-session-for-user', userId),
+  getSessionsForLocation: (code) => ipcRenderer.invoke('get-sessions-for-location', code),
+  addScanEvent: (event) => ipcRenderer.invoke('add-scan-event', event),
+  getScanEvents: (sessionId) => ipcRenderer.invoke('get-scan-events', sessionId),
+  saveItemResult: (result) => ipcRenderer.invoke('save-item-result', result),
+  updateItemResult: (data) => ipcRenderer.invoke('update-item-result', data),
+  getItemResults: (filters) => ipcRenderer.invoke('get-item-results', filters),
+  getAuthEvents: (limit) => ipcRenderer.invoke('get-auth-events', limit),
+  getStats: () => ipcRenderer.invoke('get-stats'),
+  exportXlsx: (opts) => ipcRenderer.invoke('export-xlsx', opts),
+  selectExcelFile: () => ipcRenderer.invoke('select-excel-file'),
+  formatLocation: (code) => ipcRenderer.invoke('format-location', code)
+});
