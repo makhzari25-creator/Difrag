@@ -72,11 +72,11 @@ function getDb() { if (!db) initDb(); return db; }
 function backupDb() {
   try {
     const dataDir = getDataDir();
-    const dbPath = path.join(dataDir, 'difrag.db');
     const backupsDir = path.join(dataDir, 'backups');
     const date = new Date().toISOString().slice(0, 10);
     const dest = path.join(backupsDir, `difrag-${date}.db`);
-    if (!fs.existsSync(dest)) fs.copyFileSync(dbPath, dest);
+    // Consistent snapshot even with WAL (a plain file copy can miss -wal data)
+    if (!fs.existsSync(dest)) getDb().exec(`VACUUM INTO '${dest.replace(/'/g, "''")}'`);
     const cutoff = Date.now() - 14 * 24 * 60 * 60 * 1000;
     for (const f of fs.readdirSync(backupsDir).filter(x => x.startsWith('difrag-') && x.endsWith('.db'))) {
       const p = path.join(backupsDir, f);

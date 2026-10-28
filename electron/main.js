@@ -333,14 +333,15 @@ ipcMain.handle('get-item-results', (_e, filters) => {
 ipcMain.handle('get-auth-events', (_e, limit = 200) => getDb().prepare('SELECT * FROM auth_events ORDER BY timestamp DESC LIMIT ?').all(limit));
 ipcMain.handle('get-stats', () => {
   const db = getDb();
-  const today = new Date().toISOString().slice(0, 10);
+  const n = new Date();
+  const today = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
   return {
-    sessionsToday: db.prepare("SELECT COUNT(*) as c FROM sessions WHERE started_at LIKE ?").get(`${today}%`).c,
-    itemsToday: db.prepare("SELECT COUNT(*) as c FROM item_results WHERE recorded_at LIKE ?").get(`${today}%`).c,
+    sessionsToday: db.prepare("SELECT COUNT(*) as c FROM sessions WHERE date(started_at,'localtime') = ?").get(today).c,
+    itemsToday: db.prepare("SELECT COUNT(*) as c FROM item_results WHERE date(recorded_at,'localtime') = ?").get(today).c,
     pending: db.prepare("SELECT COUNT(*) as c FROM item_results WHERE status = 'pending'").get().c,
-    matchToday: db.prepare("SELECT COUNT(*) as c FROM item_results WHERE recorded_at LIKE ? AND result_type = 'match'").get(`${today}%`).c,
-    systemToday: db.prepare("SELECT COUNT(*) as c FROM item_results WHERE recorded_at LIKE ? AND result_type = 'system_transfer'").get(`${today}%`).c,
-    physicalToday: db.prepare("SELECT COUNT(*) as c FROM item_results WHERE recorded_at LIKE ? AND result_type = 'physical_transfer'").get(`${today}%`).c
+    matchToday: db.prepare("SELECT COUNT(*) as c FROM item_results WHERE date(recorded_at,'localtime') = ? AND result_type = 'match'").get(today).c,
+    systemToday: db.prepare("SELECT COUNT(*) as c FROM item_results WHERE date(recorded_at,'localtime') = ? AND result_type = 'system_transfer'").get(today).c,
+    physicalToday: db.prepare("SELECT COUNT(*) as c FROM item_results WHERE date(recorded_at,'localtime') = ? AND result_type = 'physical_transfer'").get(today).c
   };
 });
 ipcMain.handle('export-xlsx', async (_e, { rows, sheetName, defaultPath }) => {

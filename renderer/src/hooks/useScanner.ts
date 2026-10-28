@@ -36,13 +36,8 @@ export function useScanner({ onScan, enabled = true }: ScannerOptions) {
 
     const onKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
-      if (
-        target.tagName === 'INPUT' &&
-        target.getAttribute('data-scanner') !== 'true' &&
-        (target as HTMLInputElement).type !== 'hidden'
-      ) {
-        return;
-      }
+      // Any focused input/textarea handles its own Enter (avoids double-scan with the input's onKeyDown)
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return;
 
       const now = Date.now();
       const delta = lastKeyTimeRef.current ? now - lastKeyTimeRef.current : 0;

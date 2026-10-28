@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useAppStore } from './stores/appStore';
 import { useScanner } from './hooks/useScanner';
-import { toPersianDigits, formatLocation, nowIso, getDeviceId, playBeep, vibrate } from './lib/utils';
+import { toPersianDigits, formatLocation, nowIso, getDeviceId, playBeep, vibrate, askText, askConfirm } from './lib/utils';
 import type { Product } from '@shared/types';
 import { RoleChip } from './screensA';
 
@@ -16,7 +16,7 @@ export function CountingScreen({ locationCode, sessionId, onFinish, onOpenItem }
     const product = await window.difrag.getProductByBarcode({ barcode, versionId: excelVersion.id });
     if (!product) {
       playBeep(300, 200);
-      const note = window.prompt('بارکد در اکسل نیست. توضیح:');
+      const note = await askText('بارکد در اکسل نیست. توضیح:');
       if (note) {
         await window.difrag.addScanEvent({ sessionId, barcode, productId: null, action: 'out_of_list', qtyDelta: 0, userId, userFullName: profile?.fullName, userRole: profile?.isManager ? 'مدیر' : 'انباردار', timestamp: nowIso(), deviceId: getDeviceId(), note, scanMethod: method });
         addToast('success', 'ثبت خارج از فهرست');
@@ -84,10 +84,10 @@ export function ItemCard({ product, sessionId, onDone, onCancel }: { product: Pr
     await window.difrag.addScanEvent({ sessionId, barcode: product.barcode, productId: product.id, action: 'manual', qtyDelta: n, userId, userFullName: profile?.fullName, userRole: profile?.isManager ? 'مدیر' : 'انباردار', timestamp: nowIso(), deviceId: getDeviceId(), scanMethod: 'manual' });
     setShowManual(false); setManualQty(''); playBeep(800, 60);
   };
-  const finishItem = () => {
+  const finishItem = async () => {
     if (product.locationCount === 2) {
       const codes = product.locations.map(l => l.locationCode);
-      if (!codes.every(c => checkedLocations.has(c)) && !window.confirm('هر دو مکان شمرده شد؟')) return;
+      if (!codes.every(c => checkedLocations.has(c)) && !(await askConfirm('هر دو مکان شمرده شد؟'))) return;
     }
     const refQty = product.effectiveReferenceQty != null ? product.effectiveReferenceQty : product.excelReferenceQty;
     const diff = physicalCount - refQty;
@@ -175,7 +175,9 @@ export function ReportsScreen() {
   };
   useEffect(() => { load(); }, [tab]);
   const review = async (item: any, status: 'confirmed' | 'rejected') => {
-    let note = status === 'rejected' ? (window.prompt('دلیل رد:') || '') : (window.prompt('یادداشت:') || '');
+    const asked = await askText(status === 'rejected' ? 'دلیل رد (حداقل ۱۰ نویسه):' : 'یادداشت (اختیاری):');
+    if (asked === null) return;
+    const note = asked;
     if (status === 'rejected' && note.trim().length < 10) { addToast('error', 'یادداشت رد باید حداقل ۱۰ نویسه باشد'); return; }
     await window.difrag.updateItemResult({ id: item.id, status, reviewedByName: profile?.fullName, reviewedByRole: 'مدیر', reviewedAt: nowIso(), managerNote: note || null });
     await window.difrag.logAuthEvent({ userId: useAppStore.getState().userId, fullName: profile?.fullName, isManager: true, type: 'manager_review', timestamp: nowIso(), deviceId: getDeviceId(), detail: `${status} ${item.barcode}` });

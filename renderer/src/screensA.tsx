@@ -1,21 +1,48 @@
 import React, { useEffect, useState } from 'react';
 import { useAppStore } from './stores/appStore';
-import { toPersianDigits, formatLocation, nowIso, getDeviceId } from './lib/utils';
+import { toPersianDigits, formatLocation, nowIso, getDeviceId, onDialog } from './lib/utils';
+import type { DialogReq } from './lib/utils';
 
 export function RoleChip({ isManager }: { isManager: boolean }) {
   return <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-bold ${isManager ? 'bg-system/15 text-system' : 'bg-muted/20 text-muted'}`}>{isManager ? 'مدیر' : 'انباردار'}</span>;
+}
+
+export function DialogHost() {
+  const [req, setReq] = React.useState<DialogReq | null>(null);
+  const [val, setVal] = React.useState('');
+  React.useEffect(() => onDialog(r => { setVal(''); setReq(r); }), []);
+  if (!req) return null;
+  const close = (v: string | boolean | null) => { req.resolve(v); setReq(null); };
+  return (
+    <div className="fixed inset-0 z-[60] bg-black/40 flex items-center justify-center p-4" role="dialog" aria-modal="true">
+      <div className="bg-surface rounded-card shadow-card p-5 w-full max-w-sm">
+        <div className="font-bold text-primary mb-3">{req.title}</div>
+        {req.kind === 'text' && (
+          <textarea autoFocus value={val} onChange={e => setVal(e.target.value)} rows={3}
+            className="w-full border-2 border-primary/30 rounded-btn p-3 mb-3" />
+        )}
+        <div className="flex gap-2">
+          <button onClick={() => close(req.kind === 'text' ? val : true)} className="flex-1 bg-primary text-white py-3 rounded-btn font-bold min-h-[48px]">تأیید</button>
+          <button onClick={() => close(req.kind === 'text' ? null : false)} className="flex-1 border py-3 rounded-btn min-h-[48px]">انصراف</button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export function ToastContainer() {
   const toasts = useAppStore(s => s.toasts);
   const remove = useAppStore(s => s.removeToast);
   return (
+    <>
+    <DialogHost />
     <div className="fixed bottom-4 left-4 z-50 flex flex-col gap-2 max-w-sm">
       {toasts.map(t => (
         <div key={t.id} role="status" onClick={() => remove(t.id)}
           className={`px-4 py-3 rounded-btn shadow-card text-sm text-white cursor-pointer ${t.type === 'error' ? 'bg-danger' : t.type === 'success' ? 'bg-success' : 'bg-primary'}`}>{t.message}</div>
       ))}
     </div>
+    </>
   );
 }
 

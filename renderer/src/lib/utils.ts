@@ -31,3 +31,17 @@ export function playBeep(freq = 800, duration = 60) {
 }
 export function vibrate(ms = 50) { try { if (navigator.vibrate) navigator.vibrate(ms); } catch {} }
 declare global { interface Window { difrag: any; } }
+
+// In-app dialogs (window.prompt is not supported in Electron)
+export type DialogReq = { kind: 'text' | 'confirm'; title: string; resolve: (v: string | boolean | null) => void };
+const dialogListeners = new Set<(r: DialogReq) => void>();
+export function onDialog(fn: (r: DialogReq) => void) { dialogListeners.add(fn); return () => { dialogListeners.delete(fn); }; }
+export function askText(title: string): Promise<string | null> {
+  return new Promise(resolve => { dialogListeners.forEach(fn => fn({ kind: 'text', title, resolve: resolve as any })); });
+}
+export function askConfirm(title: string): Promise<boolean> {
+  return new Promise(resolve => { dialogListeners.forEach(fn => fn({ kind: 'confirm', title, resolve: v => resolve(!!v) })); });
+}
+export function localDay(d = new Date()): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}

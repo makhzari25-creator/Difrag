@@ -2,7 +2,7 @@ name: Build Windows EXE
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, stages1-6]
   workflow_dispatch:
 
 jobs:
@@ -27,6 +27,9 @@ jobs:
 
       - name: Rebuild native modules for Electron
         run: npx electron-builder install-app-deps
+
+      - name: Run tests
+        run: npm test
 
       - name: Build renderer
         run: npm run build:renderer
