@@ -11,7 +11,8 @@
     "build:renderer": "vite build --config renderer/vite.config.ts",
     "build": "npm run build:renderer && electron-builder --win --config build/electron-builder.yml",
     "rebuild": "electron-builder install-app-deps",
-    "start": "electron ."
+    "start": "electron .",
+    "test": "node tests/location-parse.test.js"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",
