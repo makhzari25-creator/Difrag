@@ -30,7 +30,7 @@ function initDb() {
     CREATE TABLE IF NOT EXISTS products (
       id INTEGER PRIMARY KEY AUTOINCREMENT, excel_version_id INTEGER, barcode TEXT,
       size TEXT, full_name TEXT, color TEXT, gender TEXT, is_active INTEGER,
-      excel_reference_qty INTEGER, location_count INTEGER, raw_locations TEXT);
+      excel_reference_qty INTEGER, effective_reference_qty INTEGER, location_count INTEGER, raw_locations TEXT);
     CREATE TABLE IF NOT EXISTS product_locations (
       id INTEGER PRIMARY KEY AUTOINCREMENT, product_id INTEGER, location_code TEXT,
       expected_qty INTEGER, UNIQUE(product_id, location_code));
@@ -55,7 +55,17 @@ function initDb() {
       type TEXT, timestamp TEXT, device_id TEXT, detail TEXT);
     CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode);
     CREATE INDEX IF NOT EXISTS idx_pl_location ON product_locations(location_code);
+    CREATE INDEX IF NOT EXISTS idx_scan_session ON scan_events(session_id);
+    CREATE INDEX IF NOT EXISTS idx_results_session ON item_results(session_id);
   `);
+  // Compatible migration: add effective_reference_qty if missing on existing DBs
+  try {
+    const cols = db.prepare("PRAGMA table_info(products)").all().map(c => c.name);
+    if (!cols.includes('effective_reference_qty')) {
+      db.exec('ALTER TABLE products ADD COLUMN effective_reference_qty INTEGER');
+      db.exec('UPDATE products SET effective_reference_qty = excel_reference_qty WHERE effective_reference_qty IS NULL');
+    }
+  } catch (_) {}
   return db;
 }
 function getDb() { if (!db) initDb(); return db; }

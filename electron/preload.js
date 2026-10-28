@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('difrag', {
   log: (level, msg, meta) => ipcRenderer.invoke('log', level, msg, meta),
   upsertUser: (profile) => ipcRenderer.invoke('upsert-user', profile),
   logAuthEvent: (event) => ipcRenderer.invoke('log-auth-event', event),
+  validateExcel: (opts) => ipcRenderer.invoke('validate-excel', opts),
   importExcel: (opts) => ipcRenderer.invoke('import-excel', opts),
   getActiveExcel: () => ipcRenderer.invoke('get-active-excel'),
   getLocations: (versionId) => ipcRenderer.invoke('get-locations', versionId),

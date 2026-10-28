@@ -118,29 +118,64 @@ export function HomeScreen({ onNav }: { onNav: (s: string) => void }) {
 export function ImportScreen({ onDone }: { onDone: () => void }) {
   const { profile, setExcelVersion, addToast } = useAppStore();
   const [loading, setLoading] = useState(true);
+  const [activating, setActivating] = useState(false);
   const [summary, setSummary] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+  const [filePath, setFilePath] = useState<string | null>(null);
+
   useEffect(() => {
     const path = (window as any).__pendingExcel;
     if (!path) { setError('فایلی انتخاب نشده'); setLoading(false); return; }
-    window.difrag.importExcel({ filePath: path, uploadedBy: profile?.fullName || '' }).then((res: any) => {
+    setFilePath(path);
+    window.difrag.importExcel({ filePath: path, uploadedBy: profile?.fullName || '', confirm: false }).then((res: any) => {
       setLoading(false);
       if (!res.success) { setError((res.errors || []).join('\n')); setSummary(res.summary); }
-      else { setSummary(res.summary); window.difrag.getActiveExcel().then((v: any) => setExcelVersion(v)); }
+      else setSummary(res.summary);
     }).catch((e: any) => { setLoading(false); setError(String(e)); });
   }, []);
-  if (loading) return <div className="p-8 text-center text-primary">در حال پردازش اکسل…</div>;
+
+  const activate = async () => {
+    if (!filePath) return;
+    setActivating(true);
+    try {
+      const res: any = await window.difrag.importExcel({ filePath, uploadedBy: profile?.fullName || '', confirm: true });
+      if (!res.success) { setError((res.errors || []).join('\n')); setActivating(false); return; }
+      const v = await window.difrag.getActiveExcel();
+      setExcelVersion(v);
+      addToast('success', `نسخه ${v?.id ?? ''} فعال شد`);
+      onDone();
+    } catch (e: any) { setError(String(e)); setActivating(false); }
+  };
+
+  if (loading) return <div className="p-8 text-center text-primary">در حال اعتبارسنجی اکسل…</div>;
   return (
     <div className="p-4 max-w-2xl mx-auto pb-20">
-      <h2 className="text-xl font-bold mb-4">نتیجه بارگذاری</h2>
-      {error && <div className="bg-danger/10 text-danger p-4 rounded-card mb-4 whitespace-pre-wrap">{error}</div>}
+      <h2 className="text-xl font-bold mb-4">نتیجه اعتبارسنجی اکسل</h2>
+      {error && <div className="bg-danger/10 text-danger p-4 rounded-card mb-4 whitespace-pre-wrap" role="status">{error}</div>}
       {summary && (
         <div className="bg-surface rounded-card shadow-card p-4 space-y-2 mb-4 text-sm">
-          <div>کل: {toPersianDigits(summary.totalRows)} · فعال: {toPersianDigits(summary.activeRows)} · مکان: {toPersianDigits(summary.locationCount)}</div>
+          <div>کل ردیف‌ها: {toPersianDigits(summary.totalRows)}</div>
+          <div>فعال: {toPersianDigits(summary.activeRows)} · غیرفعال: {toPersianDigits(summary.inactiveRows ?? 0)}</div>
+          <div>SKU یکتا: {toPersianDigits(summary.uniqueSkus)} · مکان‌ها: {toPersianDigits(summary.locationCount)}</div>
+          <div>کالاهای چندمکانه: {toPersianDigits(summary.multiLocationRows)}</div>
+          {(summary.warnings || []).length > 0 && (
+            <div className="mt-2 text-warning">
+              <div className="font-bold">هشدارها ({toPersianDigits(summary.warnings.length)}):</div>
+              <ul className="list-disc pr-5 max-h-40 overflow-auto">
+                {summary.warnings.slice(0, 30).map((w: any, i: number) => (
+                  <li key={i}>{w.message}{w.barcode ? ` (${w.barcode})` : ''}</li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
       )}
       <div className="flex gap-3">
-        {!error && summary && <button onClick={() => { addToast('success', 'اکسل فعال شد'); onDone(); }} className="bg-primary text-white px-6 py-3 rounded-btn font-bold min-h-[48px]">تأیید</button>}
+        {!error && summary && (
+          <button onClick={activate} disabled={activating} className="bg-primary text-white px-6 py-3 rounded-btn font-bold min-h-[48px]">
+            {activating ? 'در حال فعال‌سازی…' : 'تأیید و فعال‌سازی نسخه'}
+          </button>
+        )}
         <button onClick={onDone} className="border px-6 py-3 rounded-btn min-h-[48px]">انصراف</button>
       </div>
     </div>

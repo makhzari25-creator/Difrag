@@ -89,14 +89,15 @@ export function ItemCard({ product, sessionId, onDone, onCancel }: { product: Pr
       const codes = product.locations.map(l => l.locationCode);
       if (!codes.every(c => checkedLocations.has(c)) && !window.confirm('هر دو مکان شمرده شد؟')) return;
     }
-    const diff = physicalCount - product.excelReferenceQty;
+    const refQty = product.effectiveReferenceQty != null ? product.effectiveReferenceQty : product.excelReferenceQty;
+    const diff = physicalCount - refQty;
     const type = diff === 0 ? 'match' : diff < 0 ? 'system_transfer' : 'physical_transfer';
     setFeedback({ type, diff }); setShowFeedback(true);
   };
   const confirmFeedback = async () => {
     if (!feedback) return;
     await window.difrag.saveItemResult({
-      sessionId, barcode: product.barcode, productId: product.id, excelReferenceQty: product.excelReferenceQty,
+      sessionId, barcode: product.barcode, productId: product.id, excelReferenceQty: (product.effectiveReferenceQty != null ? product.effectiveReferenceQty : product.excelReferenceQty),
       physicalQty: physicalCount, diff: feedback.diff, resultType: feedback.type, userId,
       userFullName: profile?.fullName, userRole: profile?.isManager ? 'مدیر' : 'انباردار',
       recordedAt: nowIso(), status: feedback.type === 'match' ? 'confirmed' : 'pending',
@@ -112,7 +113,7 @@ export function ItemCard({ product, sessionId, onDone, onCancel }: { product: Pr
         <h2 className="text-lg font-bold mb-1">{product.fullName}</h2>
         <div className="text-sm text-muted mb-1">{product.color} · {product.size}</div>
         <div className="font-mono text-sm mb-3" dir="ltr">{product.barcode}</div>
-        <div className="bg-primary/5 rounded-btn px-3 py-2 text-sm mb-4">مرجع اکسل: <strong>{toPersianDigits(product.excelReferenceQty)}</strong></div>
+        <div className="bg-primary/5 rounded-btn px-3 py-2 text-sm mb-4">مرجع مؤثر: <strong>{toPersianDigits(product.effectiveReferenceQty != null ? product.effectiveReferenceQty : product.excelReferenceQty)}</strong></div>
         {product.locationCount === 2 && (
           <div className="border-2 border-accent/40 rounded-card p-3 mb-4 text-sm">
             {product.locations.map(loc => (
@@ -175,7 +176,7 @@ export function ReportsScreen() {
   useEffect(() => { load(); }, [tab]);
   const review = async (item: any, status: 'confirmed' | 'rejected') => {
     let note = status === 'rejected' ? (window.prompt('دلیل رد:') || '') : (window.prompt('یادداشت:') || '');
-    if (status === 'rejected' && note.length < 5) { addToast('error', 'یادداشت زلامی'); return; }
+    if (status === 'rejected' && note.trim().length < 10) { addToast('error', 'یادداشت رد باید حداقل ۱۰ نویسه باشد'); return; }
     await window.difrag.updateItemResult({ id: item.id, status, reviewedByName: profile?.fullName, reviewedByRole: 'مدیر', reviewedAt: nowIso(), managerNote: note || null });
     await window.difrag.logAuthEvent({ userId: useAppStore.getState().userId, fullName: profile?.fullName, isManager: true, type: 'manager_review', timestamp: nowIso(), deviceId: getDeviceId(), detail: `${status} ${item.barcode}` });
     addToast('success', status === 'confirmed' ? 'تأیید شد' : 'رد شد'); load();
