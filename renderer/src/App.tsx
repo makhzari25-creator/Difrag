@@ -2,7 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { useAppStore } from './stores/appStore';
 import { formatLocation, nowIso, getDeviceId } from './lib/utils';
 import { WelcomeScreen, HomeScreen, ImportScreen, LocationsScreen, Nav, ToastContainer } from './screensA';
-import { CountingScreen, ItemCard, ReportsScreen, ProfileScreen } from './screensB';
+import { ReportsScreen, ProfileScreen } from './screensB';
+import { CountingScreen } from './counting';
 
 export default function App() {
   const { profile, screen, setScreen, excelVersion, setCurrentSession, setCurrentLocation, setCurrentProduct, currentProduct, currentSession, currentLocation, userId, addToast } = useAppStore();
@@ -25,8 +26,7 @@ export default function App() {
 
   if (!profile || screen === 'welcome') return <><WelcomeScreen /><ToastContainer /></>;
   if (screen === 'import') return <><ImportScreen onDone={() => setScreen('home')} /><ToastContainer /></>;
-  if (currentProduct && currentSession) return <><ItemCard product={currentProduct} sessionId={currentSession.id} onDone={() => setCurrentProduct(null)} onCancel={() => setCurrentProduct(null)} /><ToastContainer /></>;
-  if (counting && currentSession && currentLocation) return <><CountingScreen locationCode={currentLocation} sessionId={currentSession.id} onFinish={async () => { await window.difrag.updateSession({ id: currentSession.id, status: 'completed', endedAt: nowIso() }); setCounting(false); setCurrentSession(null); setScreen('home'); addToast('success', 'سشن ثبت شد'); }} onOpenItem={p => setCurrentProduct(p)} /><ToastContainer /></>;
+  if (counting && currentSession && currentLocation) return <><CountingScreen locationCode={currentLocation} sessionId={currentSession.id} onFinish={() => { setCounting(false); setCurrentSession(null); setScreen('home'); addToast('success', 'محل ثبت شد'); }} /><ToastContainer /></>;
   if (preLoc) return (
     <div className="p-6 max-w-md mx-auto text-center pb-20">
       <div className="bg-surface rounded-card shadow-card p-6">

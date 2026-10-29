@@ -157,7 +157,8 @@ function parseExcelFile(filePath) {
   let startIdx = 0;
   const first = rows[0] || [];
   const b0 = String(first[1] || '').trim().toLowerCase();
-  if (b0.includes('barcode') || b0.includes('بارکد') || (b0 === '' && String(first[5] || '').toLowerCase().includes('name'))) startIdx = 1;
+  // header row = column B is not a barcode (digits only), e.g. "کد محصول" / "barcode"
+  if (!/^\d{6,}$/.test(String(first[1] || '').trim())) startIdx = 1;
   const dataRows = rows.slice(startIdx);
   if (!dataRows.length) return { success: false, errors: ['فایل فاقد ردیف داده است'], products: [], summary: null };
   const maxCols = Math.max(...dataRows.map(r => (r && r.length) || 0));
@@ -176,8 +177,9 @@ function parseExcelFile(filePath) {
     if (barcodeMap.has(barcode)) { if (!duplicateBarcodes.includes(barcode)) duplicateBarcodes.push(barcode); continue; }
     barcodeMap.set(barcode, i);
     const isActiveRaw = String(r[col.isActive] ?? '').trim();
-    const isActive = isActiveRaw === 'True' || isActiveRaw === 'true' || isActiveRaw === '1';
-    let qty = parseInt(String(r[col.warehouseQty] ?? '').trim(), 10);
+    // sheet_to_json(raw:false) turns booleans into "TRUE"/"FALSE" strings
+    const isActive = ['true', '1', 'yes', 'فعال'].includes(isActiveRaw.toLowerCase());
+    let qty = parseInt(String(r[col.warehouseQty] ?? '').replace(/[,٬\s]/g, ''), 10);
     if (Number.isNaN(qty)) {
       qty = 0;
       warnings.push({ type: 'non_int', message: `مقدار غیرصحیح در ستون D برای بارکد ${barcode} به صفر تبدیل شد`, barcode });
@@ -269,17 +271,47 @@ ipcMain.handle('get-locations', (_e, versionId) => getDb().prepare(
    WHERE p.excel_version_id = ? AND p.is_active = 1 GROUP BY pl.location_code ORDER BY pl.location_code`
 ).all(versionId));
 
-ipcMain.handle('get-product-by-barcode', (_e, { barcode, versionId }) => {
-  const p = getDb().prepare('SELECT * FROM products WHERE barcode = ? AND excel_version_id = ?').get(barcode, versionId);
-  if (!p) return null;
-  const locations = getDb().prepare('SELECT * FROM product_locations WHERE product_id = ?').all(p.id);
+function mapProduct(p) {
+  const db = getDb();
+  const locations = db.prepare('SELECT * FROM product_locations WHERE product_id = ?').all(p.id);
+  const counted = !!db.prepare(
+    `SELECT 1 FROM item_results r JOIN sessions s ON s.id = r.session_id
+     WHERE r.barcode = ? AND s.excel_version_id = ? LIMIT 1`).get(p.barcode, p.excel_version_id);
   return {
     id: p.id, excelVersionId: p.excel_version_id, barcode: p.barcode, size: p.size, fullName: p.full_name,
     color: p.color, gender: p.gender, isActive: !!p.is_active, excelReferenceQty: p.excel_reference_qty,
     effectiveReferenceQty: p.effective_reference_qty != null ? p.effective_reference_qty : p.excel_reference_qty,
-    locationCount: p.location_count, rawLocations: p.raw_locations,
+    locationCount: p.location_count, rawLocations: p.raw_locations, counted,
     locations: locations.map(l => ({ id: l.id, productId: l.product_id, locationCode: l.location_code, expectedQty: l.expected_qty }))
   };
+}
+
+ipcMain.handle('get-product-by-barcode', (_e, { barcode, versionId }) => {
+  const p = getDb().prepare('SELECT * FROM products WHERE barcode = ? AND excel_version_id = ?').get(barcode, versionId);
+  return p ? mapProduct(p) : null;
+});
+
+// Same "jens" (item): first 10 digits + last digit equal, only the 2 size digits differ.
+ipcMain.handle('get-group', (_e, { barcode, versionId }) => {
+  if (!barcode || barcode.length !== 13) return [];
+  const rows = getDb().prepare(
+    `SELECT * FROM products WHERE excel_version_id = ? AND is_active = 1 AND length(barcode) = 13
+     AND substr(barcode,1,10) = ? AND substr(barcode,13,1) = ? ORDER BY substr(barcode,11,2)`
+  ).all(versionId, barcode.slice(0, 10), barcode.slice(12));
+  return rows.map(mapProduct);
+});
+
+// Products that the Excel places in this location, with stock, never counted yet.
+ipcMain.handle('get-unscanned', (_e, { locationCode, versionId }) => {
+  const rows = getDb().prepare(
+    `SELECT DISTINCT p.* FROM products p JOIN product_locations pl ON pl.product_id = p.id
+     WHERE p.excel_version_id = ? AND p.is_active = 1 AND pl.location_code = ?
+     AND COALESCE(p.effective_reference_qty, p.excel_reference_qty) > 0
+     AND NOT EXISTS (SELECT 1 FROM item_results r JOIN sessions s ON s.id = r.session_id
+                     WHERE r.barcode = p.barcode AND s.excel_version_id = p.excel_version_id)
+     ORDER BY substr(p.barcode,1,10), substr(p.barcode,13,1), substr(p.barcode,11,2)`
+  ).all(versionId, locationCode);
+  return rows.map(mapProduct);
 });
 
 ipcMain.handle('create-session', (_e, data) => {
@@ -312,24 +344,45 @@ ipcMain.handle('add-scan-event', (_e, event) => {
 });
 ipcMain.handle('get-scan-events', (_e, sessionId) => getDb().prepare('SELECT * FROM scan_events WHERE session_id = ? ORDER BY timestamp').all(sessionId));
 
-ipcMain.handle('save-item-result', (_e, result) => {
+function insertResult(result) {
   const id = result.id || uuidv4();
-  getDb().prepare('INSERT INTO item_results (id, session_id, barcode, product_id, excel_reference_qty, physical_qty, diff, result_type, user_id, user_full_name, user_role, recorded_at, status, reviewed_by_name, reviewed_by_role, reviewed_at, manager_note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-    .run(id, result.sessionId, result.barcode, result.productId || null, result.excelReferenceQty, result.physicalQty, result.diff, result.resultType, result.userId, result.userFullName, result.userRole, result.recordedAt || new Date().toISOString(), result.status, result.reviewedByName || null, result.reviewedByRole || null, result.reviewedAt || null, result.managerNote || null);
+  getDb().prepare('INSERT INTO item_results (id, session_id, barcode, product_id, excel_reference_qty, physical_qty, diff, result_type, user_id, user_full_name, user_role, recorded_at, status, reviewed_by_name, reviewed_by_role, reviewed_at, manager_note, note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+    .run(id, result.sessionId, result.barcode, result.productId || null, result.excelReferenceQty, result.physicalQty, result.diff, result.resultType, result.userId, result.userFullName, result.userRole, result.recordedAt || new Date().toISOString(), result.status, result.reviewedByName || null, result.reviewedByRole || null, result.reviewedAt || null, result.managerNote || null, result.note || null);
   return id;
-});
+}
+ipcMain.handle('save-item-result', (_e, result) => insertResult(result));
+ipcMain.handle('save-item-results', (_e, results) => getDb().transaction(list => list.map(insertResult))(results || []));
 ipcMain.handle('update-item-result', (_e, { id, status, reviewedByName, reviewedByRole, reviewedAt, managerNote }) => {
   getDb().prepare('UPDATE item_results SET status=?, reviewed_by_name=?, reviewed_by_role=?, reviewed_at=?, manager_note=? WHERE id=?')
     .run(status, reviewedByName, reviewedByRole, reviewedAt, managerNote, id);
 });
 ipcMain.handle('get-item-results', (_e, filters) => {
-  let sql = 'SELECT * FROM item_results WHERE 1=1'; const params = [];
-  if (filters?.sessionId) { sql += ' AND session_id = ?'; params.push(filters.sessionId); }
-  if (filters?.resultType) { sql += ' AND result_type = ?'; params.push(filters.resultType); }
-  if (filters?.status) { sql += ' AND status = ?'; params.push(filters.status); }
-  sql += ' ORDER BY recorded_at DESC LIMIT 500';
+  let sql = `SELECT r.*, p.full_name, p.size, p.color, s.location_code
+             FROM item_results r LEFT JOIN products p ON p.id = r.product_id LEFT JOIN sessions s ON s.id = r.session_id
+             WHERE 1=1`; const params = [];
+  const f = filters || {};
+  if (f.sessionId) { sql += ' AND r.session_id = ?'; params.push(f.sessionId); }
+  if (f.resultType) { sql += ' AND r.result_type = ?'; params.push(f.resultType); }
+  if (f.status) { sql += ' AND r.status = ?'; params.push(f.status); }
+  if (f.userName) { sql += ' AND r.user_full_name = ?'; params.push(f.userName); }
+  if (f.locationCode) { sql += ' AND s.location_code = ?'; params.push(f.locationCode); }
+  if (f.dateFrom) { sql += " AND date(r.recorded_at,'localtime') >= ?"; params.push(f.dateFrom); }
+  if (f.dateTo) { sql += " AND date(r.recorded_at,'localtime') <= ?"; params.push(f.dateTo); }
+  sql += ' ORDER BY r.recorded_at DESC LIMIT 5000';
   return getDb().prepare(sql).all(...params);
 });
+ipcMain.handle('get-misplaced', (_e, f) => {
+  let sql = `SELECT e.id, e.barcode, e.note AS expected_location, e.user_full_name, e.user_role, e.timestamp,
+                    s.location_code AS scanned_location, p.full_name, p.size
+             FROM scan_events e JOIN sessions s ON s.id = e.session_id LEFT JOIN products p ON p.id = e.product_id
+             WHERE e.action = 'wrong_location'`; const params = [];
+  if (f?.userName) { sql += ' AND e.user_full_name = ?'; params.push(f.userName); }
+  if (f?.dateFrom) { sql += " AND date(e.timestamp,'localtime') >= ?"; params.push(f.dateFrom); }
+  if (f?.dateTo) { sql += " AND date(e.timestamp,'localtime') <= ?"; params.push(f.dateTo); }
+  sql += ' ORDER BY e.timestamp DESC LIMIT 5000';
+  return getDb().prepare(sql).all(...params);
+});
+ipcMain.handle('get-users', () => getDb().prepare('SELECT DISTINCT user_full_name AS name FROM item_results ORDER BY 1').all().map(r => r.name));
 ipcMain.handle('get-auth-events', (_e, limit = 200) => getDb().prepare('SELECT * FROM auth_events ORDER BY timestamp DESC LIMIT ?').all(limit));
 ipcMain.handle('get-stats', () => {
   const db = getDb();

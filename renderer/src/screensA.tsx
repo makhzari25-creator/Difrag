@@ -218,7 +218,8 @@ export function LocationsScreen({ onSelect }: { onSelect: (c: string) => void })
   return (
     <div className="p-4 max-w-3xl mx-auto pb-20">
       <h2 className="text-xl font-bold mb-4">انتخاب مکان</h2>
-      <input className="w-full border rounded-btn px-4 py-3 mb-4" placeholder="جستجو…" value={search} onChange={e => setSearch(e.target.value)} />
+      <input className="w-full border rounded-btn px-4 py-3 mb-4" placeholder="جستجو یا تایپ کد ۸ رقمی محل و Enter" value={search} onChange={e => setSearch(e.target.value)}
+        onKeyDown={e => { if (e.key === 'Enter' && /^\d{8}$/.test(search.trim())) onSelect(search.trim()); }} />
       <div className="space-y-2">
         {filtered.map(loc => (
           <button key={loc.location_code} onClick={() => onSelect(loc.location_code)}

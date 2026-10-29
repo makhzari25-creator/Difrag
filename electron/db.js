@@ -66,6 +66,12 @@ function initDb() {
       db.exec('UPDATE products SET effective_reference_qty = excel_reference_qty WHERE effective_reference_qty IS NULL');
     }
   } catch (_) {}
+  try {
+    const rc = db.prepare("PRAGMA table_info(item_results)").all().map(c => c.name);
+    if (!rc.includes('note')) db.exec('ALTER TABLE item_results ADD COLUMN note TEXT');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_results_barcode ON item_results(barcode)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_products_ver_barcode ON products(excel_version_id, barcode)');
+  } catch (_) {}
   return db;
 }
 function getDb() { if (!db) initDb(); return db; }

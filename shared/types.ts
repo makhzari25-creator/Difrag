@@ -6,7 +6,7 @@ export interface UserProfile { fullName: string; firstName: string; lastName: st
 export interface Product {
   id: number; excelVersionId: number; barcode: string; size: string; fullName: string;
   color: string; gender: string; isActive: boolean; excelReferenceQty: number;
-  effectiveReferenceQty: number; locationCount: number; rawLocations: string;
+  effectiveReferenceQty: number; locationCount: number; rawLocations: string; counted?: boolean;
   locations: { id: number; productId: number; locationCode: string; expectedQty: number }[];
 }
 export interface Session {
