@@ -1,7 +1,8 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useAppStore } from './stores/appStore';
 import { useScanner } from './hooks/useScanner';
-import { toPersianDigits, formatLocation, nowIso, getDeviceId, askText } from './lib/utils';
+import { toPersianDigits, formatLocation, nowIso, getDeviceId, askText, askConfirm } from './lib/utils';
+import { ITrash, IUpload } from './icons';
 import type { Product } from '@shared/types';
 import { RoleChip } from './screensA';
 
@@ -35,15 +36,27 @@ export function ReportsScreen() {
   const typeFa: any = { match: 'مطابق', system_transfer: 'کسر سیستمی', physical_transfer: 'انتقال فیزیکی' };
   const statusFa: any = { pending: 'در انتظار', confirmed: 'تأیید', rejected: 'رد' };
   const fmt = (iso: string) => { try { return new Date(iso).toLocaleString('fa-IR'); } catch { return iso; } };
-  const sys = items.filter(i => i.result_type === 'system_transfer');
-  const phys = items.filter(i => i.result_type === 'physical_transfer');
-  const match = items.filter(i => i.result_type === 'match');
+  const live = items.filter(i => !i.superseded);
+  const sys = live.filter(i => i.result_type === 'system_transfer');
+  const phys = live.filter(i => i.result_type === 'physical_transfer');
+  const match = live.filter(i => i.result_type === 'match');
+  const stale = items.length - live.length;
   const row = (i: any) => ({
     'نام و نام خانوادگی': i.user_full_name, 'نقش': i.user_role, 'تاریخ': fmt(i.recorded_at), 'محل فیزیکی': i.location_code,
     'بارکد': i.barcode, 'عنوان': i.full_name, 'سایز': i.size, 'موجودی اکسل': i.excel_reference_qty, 'شمارش': i.physical_qty,
     'اختلاف': i.diff, 'نتیجه': typeFa[i.result_type], 'وضعیت': statusFa[i.status] || i.status,
-    'اسکن‌نشده': i.note === 'not_scanned' || i.note === 'not_scanned_in_group' ? 'بله' : '', 'تأییدکننده': i.reviewed_by_name || '', 'یادداشت مدیر': i.manager_note || ''
+    'منسوخ (اکسل جدید)': i.superseded ? 'بله' : '', 'دور شمارش': i.round, 'اسکن‌نشده': i.note === 'not_scanned' || i.note === 'not_scanned_in_group' ? 'بله' : '', 'تأییدکننده': i.reviewed_by_name || '', 'یادداشت مدیر': i.manager_note || ''
   });
+  const clearAll = async () => {
+    if (!profile?.isManager) { addToast('error', 'فقط مدیر می‌تواند گزارش‌ها را پاک کند'); return; }
+    if (!(await askConfirm('همهٔ گزارش‌ها (نتایج، جابه‌جایی‌ها و سشن‌ها) برای همیشه پاک می‌شود. ادامه می‌دهید؟'))) return;
+    if (!(await askConfirm('این کار قابل بازگشت نیست. مطمئن هستید؟'))) return;
+    const r = await window.difrag.clearReports({ isManager: true, userName: profile.fullName });
+    if (r?.success) {
+      await window.difrag.logAuthEvent({ userId: useAppStore.getState().userId, fullName: profile.fullName, isManager: true, type: 'clear_reports', timestamp: nowIso(), deviceId: getDeviceId(), detail: null });
+      addToast('success', 'گزارش‌ها پاک شد'); load();
+    } else addToast('error', r?.error || 'خطا');
+  };
   const exportCurrent = async () => {
     const name = ['خلاصه', 'کسر سیستمی', 'انتقال فیزیکی', 'جابه‌جایی'][tab];
     const rows = tab === 0 ? items.map(row) : tab === 1 ? sys.map(row) : tab === 2 ? phys.map(row) :
@@ -55,10 +68,11 @@ export function ReportsScreen() {
   const tabs = ['خلاصه', 'کسر سیستمی', 'انتقال فیزیکی', 'جابه‌جایی'];
   const list = tab === 1 ? sys : tab === 2 ? phys : [];
   return (
-    <div className="pb-24 max-w-3xl mx-auto">
+    <div className="pb-24 max-w-4xl mx-auto">
       <div className="sticky top-0 z-30 bg-surface border-b px-4 py-2 flex items-center gap-2">
         <span className="text-sm">نقش شما: <RoleChip isManager={!!profile?.isManager} /></span>
-        <button onClick={exportCurrent} className="mr-auto bg-accent text-white px-4 py-2 rounded-btn text-sm min-h-[44px]">خروجی اکسل</button>
+        <button onClick={exportCurrent} className="mr-auto flex items-center gap-1 bg-accent text-white px-4 py-2 rounded-btn text-sm min-h-[44px]"><IUpload className="w-4 h-4" />خروجی اکسل</button>
+        {profile?.isManager && <button onClick={clearAll} className="flex items-center gap-1 border border-danger/40 text-danger px-4 py-2 rounded-btn text-sm min-h-[44px]"><ITrash className="w-4 h-4" />پاک کردن گزارش‌ها</button>}
       </div>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2 p-4">
         <select value={fUser} onChange={e => setFUser(e.target.value)} className="border rounded-btn px-3 py-2 bg-surface">
@@ -74,12 +88,13 @@ export function ReportsScreen() {
       <div className="p-4">
         {tab === 0 && (
           <div className="grid grid-cols-2 gap-3">
-            <Stat n={items.length} t="کل ثبت‌ها" />
+            <Stat n={live.length} t="کل ثبت‌ها" />
             <Stat n={match.length} t="مطابق" c="text-success" />
             <Stat n={sys.length} t="کسر سیستمی" c="text-system" />
             <Stat n={phys.length} t="انتقال فیزیکی" c="text-physical" />
             <Stat n={moved.length} t="جابه‌جایی (محل اشتباه)" c="text-danger" />
-            <Stat n={items.filter(i => i.status === 'pending').length} t="در انتظار تأیید مدیر" c="text-warning" />
+            <Stat n={live.filter(i => i.status === 'pending').length} t="در انتظار تأیید مدیر" c="text-warning" />
+            {stale > 0 && <Stat n={stale} t="منسوخ‌شده با آپدیت اکسل" c="text-muted" />}
           </div>
         )}
         {(tab === 1 || tab === 2) && list.map(item => (
@@ -128,7 +143,7 @@ export function ProfileScreen({ onChange, onQuit }: { onChange: () => void; onQu
         <RoleChip isManager={!!profile?.isManager} />
       </div>
       <button onClick={onChange} className="w-full border py-3 rounded-btn mb-3 min-h-[48px]">تغییر نام / نقش</button>
-      <div className="text-xs text-muted my-6">دیفرگ · نسخه 1.0.0 · Build 4821</div>
+      <div className="text-xs text-muted my-6">دیفرگ · نسخه ۱٫۰٫۰ · Build 4821</div>
       <button onClick={onQuit} className="w-full bg-danger/10 text-danger py-3 rounded-btn min-h-[48px]">خروج</button>
     </div>
   );

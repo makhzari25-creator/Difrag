@@ -1,9 +1,9 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const XLSX = require('xlsx');
-const { getDataDir, initDb, getDb, backupDb, BUILD_ID, uuidv4 } = require('./db');
+const { getDataDir, initDb, getDb, currentRound, backupDb, BUILD_ID, uuidv4 } = require('./db');
 const pino = require('pino');
 
 const isDev = !app.isPackaged;
@@ -63,6 +63,7 @@ app.whenReady().then(() => {
   logger = createLogger();
   initDb();
   backupDb();
+  Menu.setApplicationMenu(null);
   createWindow();
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
@@ -148,50 +149,92 @@ function parseLocationCell(raw, totalQty) {
   return { locations, warnings, effectiveQty: totalQty };
 }
 
+const norm = (v) => String(v ?? '').replace(/[\s‌‏‎]/g, '').replace(/ي/g, 'ی').replace(/ك/g, 'ک').toLowerCase();
+const HEADERS = {
+  barcode: ['کدمحصول', 'بارکد', 'barcode', 'کدکالا'],
+  size: ['عنوانسایز', 'سایز', 'size'],
+  warehouseQty: ['م.انبارذخیره', 'موجودیانبارذخیره', 'موجودیانبار'],
+  fullName: ['عنوان', 'نامکالا', 'نام'],
+  color: ['عنوانرنگ', 'رنگ'],
+  gender: ['عنوانجنسیت', 'جنسیت'],
+  isActive: ['فعال'],
+  locations: ['م.ف.انبارذخیره', 'مکانفیزیکیانبارذخیره', 'مکان', 'محل']
+};
+const REQUIRED = ['barcode', 'warehouseQty', 'locations'];
+const COL_LABEL = { barcode: 'کد محصول (بارکد)', warehouseQty: 'م.انبار ذخیره (موجودی)', locations: 'م.ف.انبار ذخیره (مکان)', isActive: 'فعال', size: 'عنوان سایز', fullName: 'عنوان', color: 'عنوان رنگ', gender: 'عنوان جنسیت' };
+
+function detectColumns(row) {
+  const cells = (row || []).map(norm);
+  const col = {};
+  for (const [key, names] of Object.entries(HEADERS)) {
+    const idx = cells.findIndex(c => names.includes(c));
+    if (idx >= 0) col[key] = idx;
+  }
+  return col;
+}
+
 function parseExcelFile(filePath) {
   const warnings = [];
   const workbook = XLSX.readFile(filePath, { cellDates: false, raw: false });
-  const sheetName = workbook.SheetNames.includes('SheetFilter') ? 'SheetFilter' : workbook.SheetNames[0];
-  const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: '', raw: false });
-  if (!rows.length) return { success: false, errors: ['فایل خالی است'], products: [], summary: null };
-  let startIdx = 0;
-  const first = rows[0] || [];
-  const b0 = String(first[1] || '').trim().toLowerCase();
-  // header row = column B is not a barcode (digits only), e.g. "کد محصول" / "barcode"
-  if (!/^\d{6,}$/.test(String(first[1] || '').trim())) startIdx = 1;
+  // pick the sheet whose first row has the required headers (prefer SheetFilter)
+  const order = [...workbook.SheetNames].sort((a, b) => (b === 'SheetFilter') - (a === 'SheetFilter'));
+  let sheetName = null, rows = null, col = null;
+  for (const name of order) {
+    const r = XLSX.utils.sheet_to_json(workbook.Sheets[name], { header: 1, defval: '', raw: false });
+    if (!r.length) continue;
+    const c = detectColumns(r[0]);
+    if (REQUIRED.every(k => c[k] != null)) { sheetName = name; rows = r; col = c; break; }
+  }
+  let startIdx = 1;
+  if (!col) {
+    // no usable header row: fall back to the legacy fixed layout (B,C,D,F,L,Q,R,U) only if it looks right
+    sheetName = order[0];
+    rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: '', raw: false });
+    if (!rows.length) return { success: false, errors: ['فایل خالی است'], products: [], summary: null };
+    const detected = detectColumns(rows[0]);
+    const missing = REQUIRED.filter(k => detected[k] == null).map(k => COL_LABEL[k]);
+    const legacy = { barcode: 1, size: 2, warehouseQty: 3, fullName: 5, color: 11, gender: 16, isActive: 17, locations: 20 };
+    const sample = rows.slice(1, 60).map(r => String((r || [])[1] ?? '').trim()).filter(Boolean);
+    // 8-digit values are location codes, not barcodes: legacy layout needs real (>=10 digit) barcodes in column B
+    const looksLegacy = sample.length && sample.filter(x => /^\d{10,20}$/.test(x)).length / sample.length > 0.9;
+    if (!looksLegacy) {
+      return { success: false, errors: [`ساختار فایل با قالب همخوان نیست؛ ستون‌های لازم در سطر اول پیدا نشد: ${missing.join('، ')}`], products: [], summary: null };
+    }
+    col = legacy; startIdx = /^\d{6,}$/.test(String((rows[0] || [])[1] ?? '').trim()) ? 0 : 1;
+  }
   const dataRows = rows.slice(startIdx);
   if (!dataRows.length) return { success: false, errors: ['فایل فاقد ردیف داده است'], products: [], summary: null };
-  const maxCols = Math.max(...dataRows.map(r => (r && r.length) || 0));
-  if (maxCols < 18) {
-    return { success: false, errors: ['ساختار فایل ناقص است. ستون‌های B,C,D,F,L,Q,R,U لازم‌اند.'], products: [], summary: null };
+  const bcSample = dataRows.slice(0, 200).map(r => String((r || [])[col.barcode] ?? '').trim()).filter(Boolean);
+  if (!bcSample.length || bcSample.filter(x => /^\d{8,20}$/.test(x)).length / bcSample.length < 0.9) {
+    return { success: false, errors: ['ستون بارکد (کد محصول) مقدار بارکد معتبر (۸ تا ۲۰ رقم) ندارد؛ فایل را بررسی کنید.'], products: [], summary: null };
   }
-  const col = { barcode: 1, size: 2, warehouseQty: 3, fullName: 5, color: 11, gender: 16, isActive: 17, locations: 20 };
+  const get = (r, k) => (col[k] != null ? r[col[k]] : '');
   const products = [];
   const barcodeMap = new Map();
   const duplicateBarcodes = [];
   let emptyBarcodeCount = 0, multiLocationRows = 0, inactiveCount = 0, activeCount = 0;
   for (let i = 0; i < dataRows.length; i++) {
     const r = dataRows[i] || [];
-    const barcode = String(r[col.barcode] ?? '').trim();
+    const barcode = String(get(r, 'barcode') ?? '').trim();
     if (!barcode) { emptyBarcodeCount++; continue; }
     if (barcodeMap.has(barcode)) { if (!duplicateBarcodes.includes(barcode)) duplicateBarcodes.push(barcode); continue; }
     barcodeMap.set(barcode, i);
-    const isActiveRaw = String(r[col.isActive] ?? '').trim();
-    // sheet_to_json(raw:false) turns booleans into "TRUE"/"FALSE" strings
-    const isActive = ['true', '1', 'yes', 'فعال'].includes(isActiveRaw.toLowerCase());
-    let qty = parseInt(String(r[col.warehouseQty] ?? '').replace(/[,٬\s]/g, ''), 10);
+    // booleans arrive as "TRUE"/"FALSE" strings (raw:false); a file without an active column = all active
+    const isActiveRaw = String(get(r, 'isActive') ?? '').trim().toLowerCase();
+    const isActive = col.isActive == null ? true : ['true', '1', 'yes', 'فعال'].includes(isActiveRaw);
+    let qty = parseInt(String(get(r, 'warehouseQty') ?? '').replace(/[,٬\s]/g, ''), 10);
     if (Number.isNaN(qty)) {
       qty = 0;
-      warnings.push({ type: 'non_int', message: `مقدار غیرصحیح در ستون D برای بارکد ${barcode} به صفر تبدیل شد`, barcode });
+      warnings.push({ type: 'non_int', message: `مقدار غیرصحیح در ستون موجودی برای بارکد ${barcode} به صفر تبدیل شد`, barcode });
     }
-    const rawLoc = String(r[col.locations] ?? '').trim();
+    const rawLoc = String(get(r, 'locations') ?? '').trim();
     const { locations, warnings: locWarns, effectiveQty } = parseLocationCell(rawLoc, qty);
     for (const w of locWarns) warnings.push({ ...w, barcode });
     if (locations.length > 1) multiLocationRows++;
     if (isActive) activeCount++; else inactiveCount++;
     products.push({
-      barcode, size: String(r[col.size] ?? '').trim(), fullName: String(r[col.fullName] ?? '').trim(),
-      color: String(r[col.color] ?? '').trim(), gender: String(r[col.gender] ?? '').trim(),
+      barcode, size: String(get(r, 'size') ?? '').trim(), fullName: String(get(r, 'fullName') ?? '').trim(),
+      color: String(get(r, 'color') ?? '').trim(), gender: String(get(r, 'gender') ?? '').trim(),
       isActive, excelReferenceQty: qty, effectiveReferenceQty: effectiveQty,
       locationCount: locations.length, rawLocations: rawLoc, locations
     });
@@ -223,40 +266,44 @@ ipcMain.handle('validate-excel', async (_e, { filePath }) => {
   }
 });
 
+function doImport(parsed, filePath, uploadedBy) {
+  const db = getDb(); const dataDir = getDataDir();
+  const products = parsed.products;
+  const hash = crypto.createHash('sha256')
+    .update(JSON.stringify(products.map(p => p.barcode + '|' + p.excelReferenceQty + '|' + p.effectiveReferenceQty + '|' + p.isActive)))
+    .digest('hex').slice(0, 16);
+  const filename = path.basename(filePath);
+  const now = new Date().toISOString();
+  const versionId = db.transaction(() => {
+    const versionInfo = db.prepare('INSERT INTO excel_versions (file_path, uploaded_by, uploaded_at, row_count, sheet_hash, filename) VALUES (?,?,?,?,?,?)')
+      .run('', uploadedBy || '', now, products.length, hash, filename);
+    const vid = versionInfo.lastInsertRowid;
+    const destPath = path.join(dataDir, 'excel', `v${vid}-${hash}.xlsx`);
+    fs.copyFileSync(filePath, destPath);
+    db.prepare('UPDATE excel_versions SET file_path = ? WHERE id = ?').run(destPath, vid);
+    const insertProduct = db.prepare(`INSERT INTO products (
+      excel_version_id, barcode, size, full_name, color, gender, is_active,
+      excel_reference_qty, effective_reference_qty, location_count, raw_locations
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
+    const insertLoc = db.prepare('INSERT INTO product_locations (product_id, location_code, expected_qty) VALUES (?,?,?)');
+    for (const p of products) {
+      const info = insertProduct.run(vid, p.barcode, p.size, p.fullName, p.color, p.gender, p.isActive ? 1 : 0,
+        p.excelReferenceQty, p.effectiveReferenceQty, p.locationCount, p.rawLocations);
+      for (const loc of p.locations) insertLoc.run(info.lastInsertRowid, loc.code, loc.expectedQty);
+    }
+    return vid;
+  })();
+  if (logger) logger.info({ versionId, count: products.length }, 'Excel imported');
+  backupDb();
+  return versionId;
+}
+
 ipcMain.handle('import-excel', async (_e, { filePath, uploadedBy, confirm }) => {
-  const db = getDb();
-  const dataDir = getDataDir();
   try {
     const parsed = parseExcelFile(filePath);
     if (!parsed.success) return { success: false, errors: parsed.errors, summary: parsed.summary };
     if (!confirm) return { success: true, needsConfirm: true, summary: parsed.summary, errors: [] };
-    const products = parsed.products;
-    const hash = crypto.createHash('sha256')
-      .update(JSON.stringify(products.map(p => p.barcode + '|' + p.excelReferenceQty + '|' + p.effectiveReferenceQty + '|' + p.isActive)))
-      .digest('hex').slice(0, 16);
-    const filename = path.basename(filePath);
-    const now = new Date().toISOString();
-    const versionId = db.transaction(() => {
-      const versionInfo = db.prepare('INSERT INTO excel_versions (file_path, uploaded_by, uploaded_at, row_count, sheet_hash, filename) VALUES (?,?,?,?,?,?)')
-        .run('', uploadedBy || '', now, products.length, hash, filename);
-      const vid = versionInfo.lastInsertRowid;
-      const destPath = path.join(dataDir, 'excel', `v${vid}-${hash}.xlsx`);
-      fs.copyFileSync(filePath, destPath);
-      db.prepare('UPDATE excel_versions SET file_path = ? WHERE id = ?').run(destPath, vid);
-      const insertProduct = db.prepare(`INSERT INTO products (
-        excel_version_id, barcode, size, full_name, color, gender, is_active,
-        excel_reference_qty, effective_reference_qty, location_count, raw_locations
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
-      const insertLoc = db.prepare('INSERT INTO product_locations (product_id, location_code, expected_qty) VALUES (?,?,?)');
-      for (const p of products) {
-        const info = insertProduct.run(vid, p.barcode, p.size, p.fullName, p.color, p.gender, p.isActive ? 1 : 0,
-          p.excelReferenceQty, p.effectiveReferenceQty, p.locationCount, p.rawLocations);
-        for (const loc of p.locations) insertLoc.run(info.lastInsertRowid, loc.code, loc.expectedQty);
-      }
-      return vid;
-    })();
-    if (logger) logger.info({ versionId, count: products.length }, 'Excel imported');
-    backupDb();
+    const versionId = doImport(parsed, filePath, uploadedBy);
     return { success: true, versionId, summary: parsed.summary, errors: [] };
   } catch (err) {
     if (logger) logger.error(err, 'Import failed');
@@ -264,19 +311,85 @@ ipcMain.handle('import-excel', async (_e, { filePath, uploadedBy, confirm }) => 
   }
 });
 
+// Compare a freshly parsed Excel with the active version; items already counted whose quantity changed need a recount.
+function diffWithActive(parsed) {
+  const db = getDb();
+  const active = db.prepare('SELECT * FROM excel_versions ORDER BY id DESC LIMIT 1').get();
+  if (!active) return { hasActive: false, added: 0, removed: 0, changedQty: [], affectedCounted: [] };
+  const old = new Map(db.prepare('SELECT barcode, COALESCE(effective_reference_qty, excel_reference_qty) AS q FROM products WHERE excel_version_id = ?').all(active.id).map(r => [r.barcode, r.q]));
+  const countedSet = new Set(db.prepare('SELECT DISTINCT barcode FROM item_results WHERE round = ? AND superseded = 0').all(currentRound()).map(r => r.barcode));
+  let added = 0; const changedQty = []; const seen = new Set();
+  for (const p of parsed.products) {
+    seen.add(p.barcode);
+    if (!old.has(p.barcode)) { added++; continue; }
+    if (old.get(p.barcode) !== p.effectiveReferenceQty) changedQty.push({ barcode: p.barcode, size: p.size, fullName: p.fullName, from: old.get(p.barcode), to: p.effectiveReferenceQty });
+  }
+  const removed = [...old.keys()].filter(b => !seen.has(b)).length;
+  const affectedCounted = changedQty.filter(c => countedSet.has(c.barcode));
+  return { hasActive: true, activeId: active.id, added, removed, changedQty: changedQty.slice(0, 200), changedCount: changedQty.length, affectedCounted: affectedCounted.slice(0, 200), affectedCount: affectedCounted.length };
+}
+
+ipcMain.handle('update-excel', async (_e, { filePath, uploadedBy, confirm }) => {
+  try {
+    const parsed = parseExcelFile(filePath);
+    if (!parsed.success) return { success: false, errors: parsed.errors, summary: parsed.summary };
+    const diff = diffWithActive(parsed);
+    if (!confirm) return { success: true, needsConfirm: true, summary: parsed.summary, diff, errors: [] };
+    const db = getDb();
+    const affected = db.prepare('SELECT DISTINCT barcode FROM item_results WHERE round = ? AND superseded = 0').all(currentRound()).map(r => r.barcode);
+    const changedSet = new Set((diffWithActive(parsed).affectedCounted || []).map(c => c.barcode));
+    const versionId = doImport(parsed, filePath, uploadedBy);
+    const mark = db.prepare('UPDATE item_results SET superseded = 1 WHERE round = ? AND barcode = ? AND superseded = 0');
+    db.transaction(() => {
+      for (const b of affected) if (changedSet.has(b)) mark.run(currentRound(), b);
+      // sessions still open continue on the new Excel
+      db.prepare("UPDATE sessions SET excel_version_id = ? WHERE status IN ('active','paused')").run(versionId);
+    })();
+    return { success: true, versionId, summary: parsed.summary, diff, errors: [] };
+  } catch (err) {
+    if (logger) logger.error(err, 'Update excel failed');
+    return { success: false, errors: [String(err.message || err)] };
+  }
+});
+
+ipcMain.handle('reset-count', (_e, { userName }) => {
+  const db = getDb();
+  const next = currentRound() + 1;
+  db.transaction(() => {
+    db.prepare("UPDATE meta SET value = ? WHERE key = 'round'").run(String(next));
+    db.prepare("UPDATE sessions SET status = 'cancelled', ended_at = ? WHERE status IN ('active','paused')").run(new Date().toISOString());
+  })();
+  if (logger) logger.warn({ userName, round: next }, 'Count reset');
+  return { round: next };
+});
+
+ipcMain.handle('clear-reports', (_e, { isManager, userName }) => {
+  if (!isManager) return { success: false, error: 'فقط مدیر می‌تواند گزارش‌ها را پاک کند' };
+  const db = getDb();
+  db.transaction(() => {
+    db.exec('DELETE FROM item_results; DELETE FROM scan_events; DELETE FROM sessions;');
+  })();
+  if (logger) logger.warn({ userName }, 'Reports cleared');
+  return { success: true };
+});
+
 ipcMain.handle('get-active-excel', () => getDb().prepare('SELECT * FROM excel_versions ORDER BY id DESC LIMIT 1').get() || null);
 ipcMain.handle('get-locations', (_e, versionId) => getDb().prepare(
-  `SELECT pl.location_code, COUNT(DISTINCT p.id) as product_count, SUM(pl.expected_qty) as expected_units
+  `SELECT pl.location_code,
+          COUNT(DISTINCT p.id) AS product_count,
+          SUM(pl.expected_qty) AS expected_units,
+          COUNT(DISTINCT CASE WHEN COALESCE(p.effective_reference_qty,p.excel_reference_qty) > 0 THEN p.id END) AS need_count,
+          COUNT(DISTINCT CASE WHEN COALESCE(p.effective_reference_qty,p.excel_reference_qty) > 0 AND EXISTS
+            (SELECT 1 FROM item_results r WHERE r.barcode = p.barcode AND r.round = ? AND r.superseded = 0) THEN p.id END) AS counted_count,
+          (SELECT COUNT(*) FROM sessions s WHERE s.location_code = pl.location_code AND s.status IN ('active','paused')) AS open_sessions
    FROM product_locations pl JOIN products p ON p.id = pl.product_id
    WHERE p.excel_version_id = ? AND p.is_active = 1 GROUP BY pl.location_code ORDER BY pl.location_code`
-).all(versionId));
+).all(currentRound(), versionId));
 
 function mapProduct(p) {
   const db = getDb();
   const locations = db.prepare('SELECT * FROM product_locations WHERE product_id = ?').all(p.id);
-  const counted = !!db.prepare(
-    `SELECT 1 FROM item_results r JOIN sessions s ON s.id = r.session_id
-     WHERE r.barcode = ? AND s.excel_version_id = ? LIMIT 1`).get(p.barcode, p.excel_version_id);
+  const counted = !!db.prepare('SELECT 1 FROM item_results WHERE barcode = ? AND round = ? AND superseded = 0 LIMIT 1').get(p.barcode, currentRound());
   return {
     id: p.id, excelVersionId: p.excel_version_id, barcode: p.barcode, size: p.size, fullName: p.full_name,
     color: p.color, gender: p.gender, isActive: !!p.is_active, excelReferenceQty: p.excel_reference_qty,
@@ -307,8 +420,7 @@ ipcMain.handle('get-unscanned', (_e, { locationCode, versionId }) => {
     `SELECT DISTINCT p.* FROM products p JOIN product_locations pl ON pl.product_id = p.id
      WHERE p.excel_version_id = ? AND p.is_active = 1 AND pl.location_code = ?
      AND COALESCE(p.effective_reference_qty, p.excel_reference_qty) > 0
-     AND NOT EXISTS (SELECT 1 FROM item_results r JOIN sessions s ON s.id = r.session_id
-                     WHERE r.barcode = p.barcode AND s.excel_version_id = p.excel_version_id)
+     AND NOT EXISTS (SELECT 1 FROM item_results r WHERE r.barcode = p.barcode AND r.round = ${currentRound()} AND r.superseded = 0)
      ORDER BY substr(p.barcode,1,10), substr(p.barcode,13,1), substr(p.barcode,11,2)`
   ).all(versionId, locationCode);
   return rows.map(mapProduct);
@@ -346,8 +458,8 @@ ipcMain.handle('get-scan-events', (_e, sessionId) => getDb().prepare('SELECT * F
 
 function insertResult(result) {
   const id = result.id || uuidv4();
-  getDb().prepare('INSERT INTO item_results (id, session_id, barcode, product_id, excel_reference_qty, physical_qty, diff, result_type, user_id, user_full_name, user_role, recorded_at, status, reviewed_by_name, reviewed_by_role, reviewed_at, manager_note, note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-    .run(id, result.sessionId, result.barcode, result.productId || null, result.excelReferenceQty, result.physicalQty, result.diff, result.resultType, result.userId, result.userFullName, result.userRole, result.recordedAt || new Date().toISOString(), result.status, result.reviewedByName || null, result.reviewedByRole || null, result.reviewedAt || null, result.managerNote || null, result.note || null);
+  getDb().prepare('INSERT INTO item_results (id, session_id, barcode, product_id, excel_reference_qty, physical_qty, diff, result_type, user_id, user_full_name, user_role, recorded_at, status, reviewed_by_name, reviewed_by_role, reviewed_at, manager_note, note, round) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+    .run(id, result.sessionId, result.barcode, result.productId || null, result.excelReferenceQty, result.physicalQty, result.diff, result.resultType, result.userId, result.userFullName, result.userRole, result.recordedAt || new Date().toISOString(), result.status, result.reviewedByName || null, result.reviewedByRole || null, result.reviewedAt || null, result.managerNote || null, result.note || null, currentRound());
   return id;
 }
 ipcMain.handle('save-item-result', (_e, result) => insertResult(result));
@@ -391,7 +503,7 @@ ipcMain.handle('get-stats', () => {
   return {
     sessionsToday: db.prepare("SELECT COUNT(*) as c FROM sessions WHERE date(started_at,'localtime') = ?").get(today).c,
     itemsToday: db.prepare("SELECT COUNT(*) as c FROM item_results WHERE date(recorded_at,'localtime') = ?").get(today).c,
-    pending: db.prepare("SELECT COUNT(*) as c FROM item_results WHERE status = 'pending'").get().c,
+    pending: db.prepare("SELECT COUNT(*) as c FROM item_results WHERE status = 'pending' AND superseded = 0").get().c,
     matchToday: db.prepare("SELECT COUNT(*) as c FROM item_results WHERE date(recorded_at,'localtime') = ? AND result_type = 'match'").get(today).c,
     systemToday: db.prepare("SELECT COUNT(*) as c FROM item_results WHERE date(recorded_at,'localtime') = ? AND result_type = 'system_transfer'").get(today).c,
     physicalToday: db.prepare("SELECT COUNT(*) as c FROM item_results WHERE date(recorded_at,'localtime') = ? AND result_type = 'physical_transfer'").get(today).c

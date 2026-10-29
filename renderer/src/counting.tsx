@@ -4,6 +4,7 @@ import { useScanner } from './hooks/useScanner';
 import { toPersianDigits, formatLocation, nowIso, getDeviceId, playBeep, vibrate, askText, askConfirm } from './lib/utils';
 import type { Product } from '@shared/types';
 import { RoleChip } from './screensA';
+import { IBack, IShield, IShirt, IPin, ICheck, IBox, IMinus, IPlus, IKeyboard } from './icons';
 
 type ResType = 'match' | 'system_transfer' | 'physical_transfer';
 type Row = { product: Product; qty: number; scanner: number; manual: number };
@@ -30,7 +31,7 @@ const sentence = (l: Line) => {
   return `${l.product.size}: ${n} عدد به سالن منتقل شود (انتقال فیزیکی)`;
 };
 
-export function CountingScreen({ locationCode, sessionId, onFinish }: { locationCode: string; sessionId: string; onFinish: () => void }) {
+export function CountingScreen({ locationCode, sessionId, onFinish, onExit }: { locationCode: string; sessionId: string; onFinish: () => void; onExit: () => void }) {
   const { profile, userId, excelVersion, addToast } = useAppStore();
   const role = profile?.isManager ? 'مدیر' : 'انباردار';
   const versionId = excelVersion?.id;
@@ -177,22 +178,28 @@ export function CountingScreen({ locationCode, sessionId, onFinish }: { location
 
   const totalPieces = rows.reduce((a, r) => a + r.qty, 0);
   const first = rows[0]?.product;
+  const allMatch = modal?.type === 'summary' && modal.lines.every(l => l.type === 'match');
+  const exit = async () => { if (await askConfirm('از شمارش این محل خارج می‌شوید؟ شمارش‌های ثبت‌شده حفظ می‌شود و جنس باز (ثبت‌نشده) از دست می‌رود.')) onExit(); };
   return (
-    <div className="pb-28 max-w-3xl mx-auto">
-      <header className="sticky top-0 z-30 bg-surface/95 backdrop-blur border-b px-4 py-3 flex gap-3 items-center">
-        <div>
-          <div className="text-sm font-bold text-primary">{formatLocation(locationCode)}</div>
-          <div className="text-xs text-muted">{profile?.fullName}</div>
+    <div className="pb-28 min-h-full bg-bg">
+      <header className="sticky top-0 z-30 bg-primary text-white px-5 py-3 flex items-center gap-4 border-b-4 border-accent/70">
+        <button onClick={exit} aria-label="خروج از شمارش" className="w-11 h-11 rounded-full border-2 border-white/80 flex items-center justify-center shrink-0"><IBack className="w-6 h-6 rotate-180" /></button>
+        <div className="flex-1">
+          <div className="font-extrabold text-lg leading-tight">کارت آیتم</div>
+          <div className="text-xs text-white/70">{formatLocation(locationCode)}</div>
         </div>
-        <span className="mr-auto text-xs bg-primary/10 text-primary px-3 py-1 rounded-full">{toPersianDigits(done.length)} جنس ثبت‌شده</span>
-        <RoleChip isManager={!!profile?.isManager} />
+        <div className="text-left hidden sm:block">
+          <div className="text-xs text-white/70">{profile?.fullName}</div>
+          <div className="text-xs">{toPersianDigits(done.length)} جنس ثبت‌شده</div>
+        </div>
+        <div className="flex items-center gap-2"><IShield className="w-9 h-9 text-accent" /><div className="leading-tight"><div className="font-extrabold">شمارش موجودی انبار</div><div className="text-[11px] text-white/70">مرجع اکسل · دقیق · مطمئن</div></div></div>
       </header>
 
-      <div className="p-4 space-y-4">
-        <div className="bg-surface rounded-card shadow-card p-5">
+      <div className="p-4 space-y-4 max-w-4xl mx-auto">
+        <div className="bg-surface rounded-card shadow-card p-4 border border-primary/5">
           <label className="block text-sm text-muted mb-2">بارکد را اسکن کنید (یا تایپ کنید و Enter بزنید)</label>
           <input ref={inputRef} dir="ltr" inputMode="numeric" disabled={!!modal} data-scanner="true"
-            className="w-full border-2 border-primary/30 focus:border-primary outline-none rounded-btn px-4 py-4 text-center font-mono text-lg"
+            className="w-full border-2 border-accent/40 focus:border-accent outline-none rounded-btn px-4 py-4 text-center font-mono text-xl bg-bg"
             placeholder="۱۲۱۹۱۳۲۷۲۱۰۷۱"
             onKeyDown={e => {
               const now = Date.now();
@@ -209,40 +216,57 @@ export function CountingScreen({ locationCode, sessionId, onFinish }: { location
         </div>
 
         {gKey && first ? (
-          <div className="bg-surface rounded-card shadow-card p-4">
-            <div className="flex justify-between items-start gap-3 mb-3">
-              <div>
-                <div className="font-bold">{first.fullName.replace(/\s*س\s*\S+\s*(?=طرح)/, ' ')}</div>
-                <div className="text-xs text-muted">{first.color} · {toPersianDigits(rows.length)} سایز · مجموع {toPersianDigits(totalPieces)} عدد</div>
+          <>
+            <div className="bg-surface rounded-card shadow-card border border-primary/5 p-4 flex gap-4 items-center">
+              <div className="w-24 h-24 rounded-card bg-bg border flex items-center justify-center text-primary/70 shrink-0"><IShirt className="w-14 h-14" /></div>
+              <div className="flex-1 min-w-0">
+                <h2 className="text-xl font-extrabold text-primary mb-2">{first.fullName.replace(/\s*س\s*\S+\s*(?=طرح)/, ' ')}</h2>
+                <div className="grid grid-cols-3 gap-2 text-sm">
+                  <Detail t="رنگ" v={first.color} /><Detail t="جنسیت" v={first.gender} /><Detail t="مجموع شمارش" v={`${toPersianDigits(totalPieces)} عدد`} />
+                </div>
               </div>
-              <button onClick={() => openSummary(null)} className="shrink-0 bg-primary text-white px-4 py-2 rounded-btn font-bold min-h-[44px]">پایان این کد</button>
             </div>
-            <div className="space-y-2">
-              {[...rows].sort((a, b) => sizeCode(a.product.barcode).localeCompare(sizeCode(b.product.barcode))).map(r => (
-                <div key={r.product.barcode} className="flex items-center gap-3 border rounded-btn p-3">
-                  <div className="w-16 text-center">
-                    <div className="text-lg font-bold text-primary">{r.product.size}</div>
-                    <div className="font-mono text-[10px] text-muted" dir="ltr">{r.product.barcode}</div>
+            {[...rows].sort((a, b) => sizeCode(a.product.barcode).localeCompare(sizeCode(b.product.barcode))).map(r => (
+              <div key={r.product.barcode} className="bg-surface rounded-card shadow-card border border-accent/30 p-4">
+                <div className="flex items-center gap-4 flex-wrap">
+                  <div className="min-w-[72px]">
+                    <div className="text-xs text-muted">سایز</div>
+                    <div className="text-2xl font-extrabold text-primary">{r.product.size}</div>
+                    <div className="font-mono text-[11px] text-muted" dir="ltr">{r.product.barcode}</div>
                   </div>
                   <div className="flex items-center gap-2 mr-auto">
-                    <button aria-label="کم" onClick={() => setQty(r.product.barcode, r.qty - 1)} className="w-11 h-11 border-2 rounded-btn text-xl">−</button>
-                    <input key={r.qty} dir="ltr" type="number" min={0} defaultValue={r.qty} aria-label="تعداد (ثبت دستی)"
-                      className="w-24 h-11 border-2 border-primary/30 rounded-btn text-center text-xl font-bold"
-                      onBlur={e => setQty(r.product.barcode, parseInt(e.target.value || '0', 10))}
-                      onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }} />
-                    <button aria-label="زیاد" onClick={() => setQty(r.product.barcode, r.qty + 1)} className="w-11 h-11 bg-success text-white rounded-btn text-xl">+</button>
+                    <button aria-label="کم" onClick={() => setQty(r.product.barcode, r.qty - 1)} className="w-12 h-12 rounded-full bg-accent/10 text-accent flex items-center justify-center"><IMinus className="w-6 h-6" /></button>
+                    <div className="text-center">
+                      <div className="text-xs text-muted flex items-center justify-center gap-1"><IKeyboard className="w-4 h-4" />شمارش (ثبت دستی)</div>
+                      <input key={r.qty} dir="ltr" type="number" min={0} defaultValue={r.qty} aria-label="تعداد (ثبت دستی)"
+                        className="w-28 h-14 border-2 border-accent/40 rounded-btn text-center text-3xl font-extrabold text-accent bg-surface"
+                        onBlur={e => setQty(r.product.barcode, parseInt(e.target.value || '0', 10))}
+                        onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }} />
+                    </div>
+                    <button aria-label="زیاد" onClick={() => setQty(r.product.barcode, r.qty + 1)} className="w-12 h-12 rounded-full bg-success text-white flex items-center justify-center"><IPlus className="w-6 h-6" /></button>
                   </div>
                 </div>
-              ))}
-            </div>
-            <p className="text-xs text-muted mt-3">برای تعداد زیاد، عدد را مستقیم در کادر تعداد بنویسید (ثبت دستی). اسکن بارکد سایز دیگر همین جنس به همین فهرست اضافه می‌شود؛ بارکد جنس دیگر، این جنس را می‌بندد.</p>
-          </div>
+                {r.product.locations.length > 1 && (
+                  <div className="mt-3 border rounded-btn p-3 text-sm bg-bg">
+                    <div className="flex items-center gap-1 font-bold text-accent mb-1"><IPin className="w-4 h-4" />اطلاعات چندمکانی</div>
+                    {r.product.locations.map(l => (
+                      <div key={l.locationCode} className="flex justify-between py-0.5"><span dir="ltr">{l.locationCode}</span><span>عدد {toPersianDigits(l.expectedQty)}</span></div>
+                    ))}
+                    <div className="border-t mt-1 pt-1 text-primary font-medium">مجموع مرجع: {toPersianDigits(refOf(r.product))} عدد — لطفاً هر دو مکان را بشمارید.</div>
+                  </div>
+                )}
+              </div>
+            ))}
+            <p className="text-xs text-muted">برای تعداد زیاد، عدد را مستقیم در کادر شمارش بنویسید (ثبت دستی). اسکن بارکد سایز دیگرِ همین جنس به این فهرست اضافه می‌شود؛ بارکد جنس دیگر، این جنس را می‌بندد.</p>
+            <button onClick={() => openSummary(null)} className="w-full bg-primary text-white py-4 rounded-card font-extrabold text-xl min-h-[60px] flex items-center justify-center gap-2"><ICheck className="w-6 h-6" />پایان شمارش این کد</button>
+          </>
         ) : (
-          <div className="text-center text-muted py-10 bg-surface/60 rounded-card border border-dashed">هنوز جنسی در حال شمارش نیست — اولین بارکد را اسکن کنید</div>
+          <div className="text-center text-muted py-12 bg-surface/60 rounded-card border border-dashed">هنوز جنسی در حال شمارش نیست — اولین بارکد را اسکن کنید</div>
         )}
 
+        {done.length > 0 && <div className="text-sm font-bold text-primary pt-2">ثبت‌شده در این محل</div>}
         {done.map((g, i) => (
-          <div key={i} className="bg-surface rounded-card p-3 text-sm">
+          <div key={i} className="bg-surface rounded-card p-3 text-sm border border-primary/5">
             <div className="font-medium mb-1">{g.title}</div>
             <div className="flex flex-wrap gap-2">
               {g.lines.map(l => <span key={l.product.barcode} className={`border rounded-full px-3 py-0.5 text-xs ${tone[l.type]}`}>{l.product.size} · {toPersianDigits(l.physical)}/{toPersianDigits(l.ref)}</span>)}
@@ -251,25 +275,28 @@ export function CountingScreen({ locationCode, sessionId, onFinish }: { location
         ))}
       </div>
 
-      <div className="fixed bottom-16 inset-x-0 p-4 bg-gradient-to-t from-bg to-transparent">
-        <button onClick={finishLocation} disabled={!!modal} className="w-full max-w-3xl mx-auto block bg-accent text-white py-3 rounded-btn font-bold min-h-[48px] shadow-card">اتمام این محل فیزیکی</button>
+      <div className="fixed bottom-0 inset-x-0 p-4 bg-gradient-to-t from-bg via-bg to-transparent">
+        <button onClick={finishLocation} disabled={!!modal} className="w-full max-w-4xl mx-auto block bg-accent text-white py-3.5 rounded-card font-extrabold min-h-[52px] shadow-card">اتمام این محل فیزیکی</button>
       </div>
 
       {modal?.type === 'summary' && (
         <Overlay>
-          <h3 className="text-lg font-bold text-primary mb-1">نتیجهٔ این جنس</h3>
-          <p className="text-xs text-muted mb-3">به ترتیب سایز، در مقایسه با موجودی اکسل</p>
+          <div className="text-center mb-3">
+            <div className={`w-16 h-16 rounded-full mx-auto flex items-center justify-center text-white ${allMatch ? 'bg-success' : 'bg-system'}`}>{allMatch ? <ICheck className="w-9 h-9" /> : <IBox className="w-9 h-9" />}</div>
+            <h3 className="text-2xl font-extrabold text-primary mt-2">{allMatch ? 'مطابقت کامل' : 'مغایرت شناسایی شد'}</h3>
+            <p className="text-sm text-muted">{allMatch ? 'تعداد اقلام فیزیکی با فایل اکسل مطابقت دارد.' : 'نتیجهٔ این جنس به ترتیب سایز'}</p>
+          </div>
           <div className="space-y-2 mb-3">
             {modal.lines.map(l => (
               <div key={l.product.barcode} className={`border-2 rounded-btn p-3 flex items-center gap-3 ${tone[l.type]}`}>
-                <div className="text-xl font-bold w-14 text-center">{l.product.size}</div>
-                <div className="text-sm flex-1 text-text">اکسل {toPersianDigits(l.ref)} · شمارش {toPersianDigits(l.physical)}</div>
+                <div className="text-xl font-extrabold w-14 text-center">{l.product.size}</div>
+                <div className="text-sm flex-1 text-text">فیزیکی {toPersianDigits(l.physical)} · اکسل {toPersianDigits(l.ref)} · اختلاف {toPersianDigits(l.diff)}</div>
                 <div className="font-bold text-sm">{label[l.type]}{l.diff !== 0 && ` ${toPersianDigits(Math.abs(l.diff))}`}</div>
               </div>
             ))}
           </div>
-          <ul className="text-sm list-disc pr-5 mb-4 space-y-0.5">{modal.lines.map(l => <li key={l.product.barcode}>{sentence(l)}</li>)}</ul>
-          <button onClick={confirmSummary} className="w-full bg-primary text-white py-3 rounded-btn font-bold min-h-[48px]">تأیید و ثبت — کد بعدی</button>
+          {!allMatch && <ul className="text-sm list-disc pr-5 mb-4 space-y-0.5">{modal.lines.map(l => <li key={l.product.barcode}>{sentence(l)}</li>)}</ul>}
+          <button onClick={confirmSummary} className="w-full bg-success text-white py-3.5 rounded-btn font-extrabold min-h-[52px] flex items-center justify-center gap-2"><ICheck className="w-5 h-5" />تأیید و ادامه</button>
           <button onClick={backToCounting} className="w-full mt-2 border py-3 rounded-btn min-h-[48px]">بازگشت برای شمارش مجدد</button>
         </Overlay>
       )}
@@ -322,4 +349,8 @@ function Overlay({ children }: { children: React.ReactNode }) {
       <div className="bg-surface rounded-card shadow-card p-5 w-full max-w-md max-h-[90vh] overflow-auto">{children}</div>
     </div>
   );
+}
+
+function Detail({ t, v }: { t: string; v: string }) {
+  return <div><div className="text-xs text-muted">{t}</div><div className="font-medium">{v || '—'}</div></div>;
 }

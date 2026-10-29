@@ -69,11 +69,16 @@ function initDb() {
   try {
     const rc = db.prepare("PRAGMA table_info(item_results)").all().map(c => c.name);
     if (!rc.includes('note')) db.exec('ALTER TABLE item_results ADD COLUMN note TEXT');
+    if (!rc.includes('round')) db.exec('ALTER TABLE item_results ADD COLUMN round INTEGER DEFAULT 1');
+    if (!rc.includes('superseded')) db.exec('ALTER TABLE item_results ADD COLUMN superseded INTEGER DEFAULT 0');
+    db.exec('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)');
+    db.exec("INSERT OR IGNORE INTO meta (key, value) VALUES ('round', '1')");
     db.exec('CREATE INDEX IF NOT EXISTS idx_results_barcode ON item_results(barcode)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_products_ver_barcode ON products(excel_version_id, barcode)');
   } catch (_) {}
   return db;
 }
+function currentRound() { return parseInt(getDb().prepare("SELECT value FROM meta WHERE key='round'").get()?.value || '1', 10); }
 function getDb() { if (!db) initDb(); return db; }
 function backupDb() {
   try {
@@ -90,4 +95,4 @@ function backupDb() {
     }
   } catch (e) { console.error('Backup failed', e); }
 }
-module.exports = { getDataDir, initDb, getDb, backupDb, BUILD_ID, uuidv4 };
+module.exports = { getDataDir, initDb, getDb, currentRound, backupDb, BUILD_ID, uuidv4 };
