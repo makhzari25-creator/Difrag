@@ -5,6 +5,9 @@ on:
     branches: [main, master, stages1-6]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
@@ -47,6 +50,20 @@ jobs:
             dist/Difrag-Setup-*.exe
             dist/Difrag-Portable-*.exe
           if-no-files-found: warn
+
+      - name: Publish release (direct download links)
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd dist
+          sha256sum Difrag-Setup-*.exe Difrag-Portable-*.exe > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          gh release create "build-4821-${{ github.run_number }}" Difrag-Setup-*.exe Difrag-Portable-*.exe SHA256SUMS.txt \
+            --repo "${{ github.repository }}" --target "${{ github.sha }}" \
+            --title "Difrag 1.0.0 (Build 4821) #${{ github.run_number }}" \
+            --notes "Windows installer and portable build. Verify with SHA256SUMS.txt." --latest
 
       - name: List dist
         run: dir dist
