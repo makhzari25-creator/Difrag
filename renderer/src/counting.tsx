@@ -1,17 +1,20 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useAppStore } from './stores/appStore';
 import { useScanner } from './hooks/useScanner';
-import { toPersianDigits, formatLocation, nowIso, getDeviceId, playBeep, vibrate, askText, askConfirm } from './lib/utils';
+import { toPersianDigits, formatLocation, formatRoom, nowIso, getDeviceId, playBeep, vibrate, askText, askConfirm } from './lib/utils';
 import type { Product } from '@shared/types';
+import { detectShelf, isShelfDone, needsCount, shelvesOfRoom, unfinishedShelves } from '@shared/room';
 import { RoleChip } from './screensA';
-import { IBack, IShield, IShirt, IPin, ICheck, IBox, IMinus, IPlus, IKeyboard } from './icons';
+import { IBack, IShield, IShirt, IPin, ICheck, IBox, IMinus, IPlus, IKeyboard, IWarehouse } from './icons';
 
 type ResType = 'match' | 'system_transfer' | 'physical_transfer';
 type Row = { product: Product; qty: number; scanner: number; manual: number };
 type Line = { product: Product; physical: number; ref: number; diff: number; type: ResType };
 type Modal =
   | { type: 'summary'; lines: Line[]; pending: { code: string; method: 'scanner' | 'manual' } | null; thenFinish: boolean }
-  | { type: 'wrong'; product: Product; expected: string[] }
+  | { type: 'wrong'; product: Product; expected: string[]; shelf?: string; target?: string; streak?: number; barcode?: string; method?: 'scanner' | 'manual' }
+  | { type: 'pickShelf'; product: Product; shelves: string[]; barcode: string; method: 'scanner' | 'manual' }
+  | { type: 'roomEnd'; left: any[] }
   | { type: 'unscanned'; items: Product[]; selected: Set<number> };
 
 const refOf = (p: Product) => (p.effectiveReferenceQty != null ? p.effectiveReferenceQty : p.excelReferenceQty);
@@ -31,10 +34,23 @@ const sentence = (l: Line) => {
   return `${l.product.size}: ${n} عدد به سالن منتقل شود (انتقال فیزیکی)`;
 };
 
-export function CountingScreen({ locationCode, sessionId, onFinish, onExit }: { locationCode: string; sessionId: string; onFinish: () => void; onExit: () => void }) {
+// locationCode: 8 digits = one physical location (original flow);
+//               4 digits = whole room: the shelf is detected from the first scan, one session per shelf.
+export function CountingScreen({ locationCode, sessionId, onFinish, onExit }: { locationCode: string; sessionId: string; onFinish: () => void; onExit: (status?: 'paused' | 'completed' | 'cancelled') => void }) {
   const { profile, userId, excelVersion, addToast } = useAppStore();
   const role = profile?.isManager ? 'مدیر' : 'انباردار';
   const versionId = excelVersion?.id;
+  const roomMode = locationCode.length === 4;
+  const [shelf, setShelfState] = useState<string | null>(roomMode ? null : locationCode);
+  const [shelves, setShelves] = useState<any[]>([]);
+  const shelfRef = useRef<string | null>(roomMode ? null : locationCode);
+  const shelfSessRef = useRef<string | null>(null);   // session of the shelf being counted (room mode)
+  const savedRef = useRef(0);                         // results saved in this whole run
+  const shelfSavedRef = useRef(0);                    // results saved on the current shelf
+  const streakRef = useRef<{ shelf: string; n: number } | null>(null);
+  const setShelf = (c: string | null) => { shelfRef.current = c; setShelfState(c); };
+  const curLoc = () => shelfRef.current ?? locationCode;
+  const sessId = () => (roomMode ? shelfSessRef.current || sessionId : sessionId);
 
   const [rows, setRowsState] = useState<Row[]>([]);
   const [siblings, setSiblingsState] = useState<Product[]>([]);
@@ -51,11 +67,26 @@ export function CountingScreen({ locationCode, sessionId, onFinish, onExit }: { 
 
   const logEvent = (action: string, p: { barcode: string; id?: number } | null, qtyDelta: number, extra: any = {}) =>
     window.difrag.addScanEvent({
-      sessionId, barcode: p?.barcode ?? extra.barcode, productId: p?.id ?? null, action, qtyDelta, userId,
+      sessionId: sessId(), barcode: p?.barcode ?? extra.barcode, productId: p?.id ?? null, action, qtyDelta, userId,
       userFullName: profile?.fullName, userRole: role, timestamp: nowIso(), deviceId: getDeviceId(), ...extra
     });
 
   useEffect(() => { if (!modal) inputRef.current?.focus(); }, [modal, gKey]);
+
+  // ---- whole-room mode helpers ----
+  const refreshShelves = async () => {
+    if (!roomMode || !versionId) return;
+    const all = await window.difrag.getLocations(versionId);
+    setShelves(shelvesOfRoom(all, locationCode));
+  };
+  useEffect(() => { refreshShelves(); }, [versionId]);
+  const lockShelf = async (code: string) => {
+    if (!profile || !userId || !versionId) return;
+    const sess = await window.difrag.createSession({ locationCode: code, userId, userName: profile.fullName, userRole: role, excelVersionId: versionId });
+    shelfSessRef.current = sess.id; shelfSavedRef.current = 0; streakRef.current = null;
+    setDone([]); setShelf(code);
+    playBeep(1000, 90);
+  };
 
   const buildLines = (): Line[] => {
     const scanned = new Map(rowsRef.current.map(r => [r.product.barcode, r]));
@@ -64,7 +95,7 @@ export function CountingScreen({ locationCode, sessionId, onFinish, onExit }: { 
     for (const s of sibRef.current) {
       if (scanned.has(s.barcode) || s.counted) continue;
       // unscanned size of this item that the Excel places only in this location => counted as 0
-      if (s.locations.length === 1 && s.locations[0].locationCode === locationCode && refOf(s) > 0) lines.push(mk(s, 0));
+      if (s.locations.length === 1 && s.locations[0].locationCode === curLoc() && refOf(s) > 0) lines.push(mk(s, 0));
     }
     return lines.sort((a, b) => sizeCode(a.product.barcode).localeCompare(sizeCode(b.product.barcode)));
   };
@@ -94,12 +125,37 @@ export function CountingScreen({ locationCode, sessionId, onFinish, onExit }: { 
     }
     if (product.counted) { playBeep(300, 200); addToast('error', 'این کد قبلاً شمارش و ثبت شده است'); return; }
     const codes = product.locations.map(l => l.locationCode);
-    if (codes.length && !codes.includes(locationCode)) {
+    if (roomMode && !shelfRef.current) {
+      // whole-room mode: the first scan decides the physical location (shelf), no confirm needed
+      const d = detectShelf(codes, locationCode);
+      if (d.kind === 'no_location') {
+        playBeep(300, 200);
+        addToast('error', 'این کد در اکسل مکان ندارد؛ ابتدا جنسی با مکان مشخص اسکن کنید تا محل فیزیکی تعیین شود');
+        return;
+      }
+      if (d.kind === 'other_room') {
+        playBeep(300, 200);
+        await logEvent('wrong_location', product, 0, { note: codes.join(','), scanMethod: method });
+        setModal({ type: 'wrong', product, expected: codes });
+        return;
+      }
+      if (d.kind === 'pick') { playBeep(600, 120); setModal({ type: 'pickShelf', product, shelves: d.shelves, barcode, method }); return; }
+      await lockShelf(d.shelf);
+    }
+    const here = curLoc();
+    if (codes.length && !codes.includes(here)) {
       playBeep(300, 200);
       await logEvent('wrong_location', product, 0, { note: codes.join(','), scanMethod: method });
-      setModal({ type: 'wrong', product, expected: codes });
+      let streak = 0; let target: string | undefined;
+      if (roomMode) {
+        target = codes.find(c => c.startsWith(locationCode));
+        if (target) { const s = streakRef.current; streakRef.current = s && s.shelf === target ? { shelf: target, n: s.n + 1 } : { shelf: target, n: 1 }; streak = streakRef.current.n; }
+        else streakRef.current = null;
+      }
+      setModal({ type: 'wrong', product, expected: codes, shelf: roomMode ? here : undefined, target, streak, barcode, method });
       return;
     }
+    streakRef.current = null;
     const key = groupKeyOf(barcode);
     if (keyRef.current && keyRef.current !== key) { openSummary({ code: barcode, method }); return; }
     if (!keyRef.current) {
@@ -109,7 +165,7 @@ export function CountingScreen({ locationCode, sessionId, onFinish, onExit }: { 
     const idx = rowsRef.current.findIndex(r => r.product.barcode === barcode);
     if (idx < 0) {
       if (product.locations.length > 1) {
-        const others = codes.filter(c => c !== locationCode).map(formatLocation).join('، ');
+        const others = codes.filter(c => c !== curLoc()).map(formatLocation).join('، ');
         const ok = await askConfirm(`این کالا یک محل فیزیکی دیگر هم دارد: ${others}. همهٔ موجودی هر دو محل را خودتان شمارش و همین‌جا ثبت کنید. ادامه؟`);
         if (!ok) { if (!rowsRef.current.length) clearGroup(); return; }
       }
@@ -136,15 +192,22 @@ export function CountingScreen({ locationCode, sessionId, onFinish, onExit }: { 
     if (modal?.type !== 'summary') return;
     const m = modal; setModal(null);
     await window.difrag.saveItemResults(m.lines.map(l => ({
-      sessionId, barcode: l.product.barcode, productId: l.product.id, excelReferenceQty: l.ref, physicalQty: l.physical,
+      sessionId: sessId(), barcode: l.product.barcode, productId: l.product.id, excelReferenceQty: l.ref, physicalQty: l.physical,
       diff: l.diff, resultType: l.type, userId, userFullName: profile?.fullName, userRole: role, recordedAt: nowIso(),
       status: l.type === 'match' ? 'confirmed' : 'pending', note: l.physical === 0 && !rowsRef.current.some(r => r.product.barcode === l.product.barcode) ? 'not_scanned_in_group' : null
     })));
     const first = m.lines[0]?.product;
     setDone(d => [{ title: first ? `${first.fullName}` : '—', lines: m.lines }, ...d]);
+    savedRef.current += m.lines.length; shelfSavedRef.current += m.lines.length;
     clearGroup();
     addToast('success', 'مغایرت‌های این جنس ثبت شد');
-    if (m.thenFinish) await finishLocation(); else if (m.pending) handleScan(m.pending.code, m.pending.method);
+    if (roomMode) await refreshShelves();
+    if (m.thenFinish) await finishLocation();
+    else {
+      // room mode: the shelf ends by itself once every expected item has been counted
+      if (roomMode && shelfRef.current && await shelfIsDone()) await completeShelf();
+      if (m.pending) handleScan(m.pending.code, m.pending.method);
+    }
   };
   const backToCounting = () => {
     if (modal?.type === 'summary' && modal.pending) addToast('info', 'بارکد جدید شمارش نشد؛ پس از اصلاح دوباره اسکن کنید');
@@ -152,14 +215,57 @@ export function CountingScreen({ locationCode, sessionId, onFinish, onExit }: { 
   };
 
   const finishLocation = async () => {
+    if (roomMode && !shelfRef.current) return;
     if (keyRef.current && rowsRef.current.length) { openSummary(null, true); return; }
-    const items: Product[] = await window.difrag.getUnscanned({ locationCode, versionId });
+    const items: Product[] = await window.difrag.getUnscanned({ locationCode: curLoc(), versionId });
     if (!items.length) { await complete(); return; }
     setModal({ type: 'unscanned', items, selected: new Set(items.filter(i => i.locations.length === 1).map(i => i.id)) });
   };
   const complete = async () => {
+    if (roomMode) { await completeShelf(); return; }
     await window.difrag.updateSession({ id: sessionId, status: 'completed', endedAt: nowIso() });
     onFinish();
+  };
+
+  // ---- whole-room mode: shelf lifecycle ----
+  const shelfIsDone = async () => {
+    const left: Product[] = await window.difrag.getUnscanned({ locationCode: curLoc(), versionId });
+    return left.length === 0;
+  };
+  const completeShelf = async () => {
+    const code = shelfRef.current; const sid = shelfSessRef.current;
+    if (sid) await window.difrag.updateSession({ id: sid, status: 'completed', endedAt: nowIso() });
+    shelfSessRef.current = null; shelfSavedRef.current = 0; streakRef.current = null;
+    setShelf(null); setDone([]); clearGroup();
+    if (code) addToast('success', `محل ${formatLocation(code)} تمام شد`);
+    await refreshShelves();
+  };
+  // Optional escape hatch: the first scan pointed at the wrong shelf. Never required.
+  const changeShelf = async (rescan?: { code: string; method: 'scanner' | 'manual' }) => {
+    if (!roomMode || !shelfRef.current) return;
+    if (rowsRef.current.length && !(await askConfirm('جنس بازِ ثبت‌نشده پاک می‌شود و محل فیزیکی با اسکن بعدی دوباره تشخیص داده می‌شود. ادامه؟'))) return;
+    const sid = shelfSessRef.current; const keep = shelfSavedRef.current > 0;
+    if (sid) await window.difrag.updateSession({ id: sid, status: keep ? 'paused' : 'cancelled', endedAt: keep ? null : nowIso() });
+    shelfSessRef.current = null; shelfSavedRef.current = 0; streakRef.current = null;
+    setShelf(null); setDone([]); clearGroup(); setModal(null);
+    addToast('info', 'محل فیزیکی پاک شد؛ با اسکن بعدی محل جدید مشخص می‌شود');
+    await refreshShelves();
+    if (rescan) handleScan(rescan.code, rescan.method);
+  };
+  const choosePick = async (code: string) => {
+    if (modal?.type !== 'pickShelf') return;
+    const m = modal; setModal(null);
+    await lockShelf(code);
+    handleScan(m.barcode, m.method);
+  };
+  const requestFinishRoom = async () => {
+    if (shelfRef.current) { addToast('error', 'ابتدا محل فیزیکی فعلی را تمام کنید (یا «تغییر قفسه» را بزنید)'); return; }
+    const all = versionId ? await window.difrag.getLocations(versionId) : [];
+    setModal({ type: 'roomEnd', left: unfinishedShelves(all, locationCode) });
+  };
+  const finishRoom = async () => {
+    await window.difrag.updateSession({ id: sessionId, status: 'completed', endedAt: nowIso() });
+    setModal(null); onFinish();
   };
   const registerUnscanned = async () => {
     if (modal?.type !== 'unscanned') return;
@@ -167,10 +273,11 @@ export function CountingScreen({ locationCode, sessionId, onFinish, onExit }: { 
     setModal(null);
     if (chosen.length) {
       await window.difrag.saveItemResults(chosen.map(p => ({
-        sessionId, barcode: p.barcode, productId: p.id, excelReferenceQty: refOf(p), physicalQty: 0, diff: -refOf(p),
+        sessionId: sessId(), barcode: p.barcode, productId: p.id, excelReferenceQty: refOf(p), physicalQty: 0, diff: -refOf(p),
         resultType: 'system_transfer', userId, userFullName: profile?.fullName, userRole: role, recordedAt: nowIso(),
         status: 'pending', note: 'not_scanned'
       })));
+      savedRef.current += chosen.length; shelfSavedRef.current += chosen.length;
       addToast('success', `${toPersianDigits(chosen.length)} مغایرت سیستمی ثبت شد`);
     }
     await complete();
@@ -179,14 +286,28 @@ export function CountingScreen({ locationCode, sessionId, onFinish, onExit }: { 
   const totalPieces = rows.reduce((a, r) => a + r.qty, 0);
   const first = rows[0]?.product;
   const allMatch = modal?.type === 'summary' && modal.lines.every(l => l.type === 'match');
-  const exit = async () => { if (await askConfirm('از شمارش این محل خارج می‌شوید؟ شمارش‌های ثبت‌شده حفظ می‌شود و جنس باز (ثبت‌نشده) از دست می‌رود.')) onExit(); };
+  const exit = async () => {
+    if (!(await askConfirm('از شمارش این محل خارج می‌شوید؟ شمارش‌های ثبت‌شده حفظ می‌شود و جنس باز (ثبت‌نشده) از دست می‌رود.'))) return;
+    if (!roomMode) { onExit(); return; }
+    // room run: a paused shelf session carries the resume point; the room session ends unless
+    // earlier shelves were saved and no shelf is open (then resume re-enters room mode).
+    const sid = shelfSessRef.current;
+    if (sid) {
+      const keep = shelfSavedRef.current > 0;
+      await window.difrag.updateSession({ id: sid, status: keep ? 'paused' : 'cancelled', endedAt: keep ? null : nowIso() });
+      shelfSessRef.current = null;
+      onExit(keep ? 'completed' : savedRef.current > 0 ? 'paused' : 'cancelled');
+      return;
+    }
+    onExit(savedRef.current > 0 ? 'paused' : 'cancelled');
+  };
   return (
     <div className="pb-28 min-h-full bg-bg">
       <header className="sticky top-0 z-30 bg-primary text-white px-5 py-3 flex items-center gap-4 border-b-4 border-accent/70">
         <button onClick={exit} aria-label="خروج از شمارش" className="w-11 h-11 rounded-full border-2 border-white/80 flex items-center justify-center shrink-0"><IBack className="w-6 h-6 rotate-180" /></button>
         <div className="flex-1">
           <div className="font-extrabold text-lg leading-tight">کارت آیتم</div>
-          <div className="text-xs text-white/70">{formatLocation(locationCode)}</div>
+          <div className="text-xs text-white/70">{roomMode ? `شمارش کل اتاق · ${formatRoom(locationCode)}` : formatLocation(locationCode)}</div>
         </div>
         <div className="text-left hidden sm:block">
           <div className="text-xs text-white/70">{profile?.fullName}</div>
@@ -196,6 +317,35 @@ export function CountingScreen({ locationCode, sessionId, onFinish, onExit }: { 
       </header>
 
       <div className="p-4 space-y-4 max-w-4xl mx-auto">
+        {roomMode && (() => {
+          const need = shelves.filter(needsCount); const doneN = need.filter(isShelfDone).length;
+          return (
+            <div className={`rounded-card shadow-card border p-4 ${shelf ? 'bg-primary/5 border-primary/30' : 'bg-surface border-dashed border-primary/30'}`}>
+              {shelf ? (
+                <div className="flex items-center gap-3 flex-wrap">
+                  <IPin className="w-7 h-7 text-primary shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="font-extrabold text-primary text-lg">شما در حال اسکن محل فیزیکی <span dir="ltr">{shelf}</span> هستید</div>
+                    <div className="text-sm text-text/80">{formatLocation(shelf)}</div>
+                  </div>
+                  <button onClick={() => changeShelf()} className="text-sm text-accent underline min-h-[44px] px-2">تغییر قفسه</button>
+                </div>
+              ) : (
+                <div className="text-center">
+                  <IWarehouse className="w-9 h-9 text-primary mx-auto mb-1" />
+                  <div className="font-bold text-primary">{formatRoom(locationCode)}</div>
+                  <div className="text-sm text-muted">اولین جنس را اسکن کنید؛ محل فیزیکی خودکار تشخیص داده می‌شود.</div>
+                </div>
+              )}
+              {need.length > 0 && (
+                <div className="mt-3">
+                  <div className="h-2 rounded bg-primary/10 overflow-hidden"><div className="h-full bg-success" style={{ width: `${Math.round((doneN / need.length) * 100)}%` }} /></div>
+                  <div className="text-xs text-muted mt-1">{toPersianDigits(doneN)} از {toPersianDigits(need.length)} قفسه این اتاق تمام شده</div>
+                </div>
+              )}
+            </div>
+          );
+        })()}
         <div className="bg-surface rounded-card shadow-card p-4 border border-primary/5">
           <label className="block text-sm text-muted mb-2">بارکد را اسکن کنید (یا تایپ کنید و Enter بزنید)</label>
           <input ref={inputRef} dir="ltr" inputMode="numeric" disabled={!!modal} data-scanner="true"
@@ -276,7 +426,14 @@ export function CountingScreen({ locationCode, sessionId, onFinish, onExit }: { 
       </div>
 
       <div className="fixed bottom-0 inset-x-0 p-4 bg-gradient-to-t from-bg via-bg to-transparent">
-        <button onClick={finishLocation} disabled={!!modal} className="w-full max-w-4xl mx-auto block bg-accent text-white py-3.5 rounded-card font-extrabold min-h-[52px] shadow-card">اتمام این محل فیزیکی</button>
+        {roomMode ? (
+          <div className="max-w-4xl mx-auto flex gap-2">
+            <button onClick={finishLocation} disabled={!!modal || !shelf} className="flex-1 bg-accent text-white py-3.5 rounded-card font-extrabold min-h-[52px] shadow-card disabled:opacity-40">اتمام این محل فیزیکی</button>
+            <button onClick={requestFinishRoom} disabled={!!modal} className="bg-primary text-white px-5 py-3.5 rounded-card font-bold min-h-[52px] shadow-card disabled:opacity-40">پایان اتاق</button>
+          </div>
+        ) : (
+          <button onClick={finishLocation} disabled={!!modal} className="w-full max-w-4xl mx-auto block bg-accent text-white py-3.5 rounded-card font-extrabold min-h-[52px] shadow-card">اتمام این محل فیزیکی</button>
+        )}
       </div>
 
       {modal?.type === 'summary' && (
@@ -307,13 +464,63 @@ export function CountingScreen({ locationCode, sessionId, onFinish, onExit }: { 
             <div className="text-4xl mb-2">⚠️</div>
             <h3 className="text-lg font-bold text-danger mb-2">محل فیزیکی اشتباه است</h3>
             <p className="text-sm mb-1">{modal.product.fullName} · {modal.product.size}</p>
-            <p className="text-sm mb-3">این کالا اینجا شمرده نمی‌شود. آن را به محل اصلی (مرجع اکسل) منتقل کنید:</p>
+            <p className="text-sm mb-3">{modal.shelf
+              ? <>این جنس مربوط به محل فیزیکی دیگری است. آن را سر جایش بگذارید تا محل <b dir="ltr">{modal.shelf}</b> به اتمام برسد. جای درست:</>
+              : 'این کالا اینجا شمرده نمی‌شود. آن را به محل اصلی (مرجع اکسل) منتقل کنید:'}</p>
             <div className="bg-primary/10 text-primary rounded-btn p-3 font-bold mb-4 space-y-1">
               {modal.expected.map(c => <div key={c}>{formatLocation(c)}</div>)}
             </div>
             <p className="text-xs text-muted mb-4">در همان محل، هنگام شمارش بررسی می‌شود. این رویداد با نام شما ثبت شد.</p>
+            {modal.shelf && modal.target && (modal.streak || 0) >= 2 && modal.barcode && modal.method && (
+              <button onClick={() => changeShelf({ code: modal.barcode!, method: modal.method! })} className="w-full mb-2 border border-accent text-accent py-3 rounded-btn font-bold min-h-[48px]">
+                من در محل <span dir="ltr">{modal.target}</span> هستم (تغییر قفسه)
+              </button>
+            )}
             <button onClick={() => setModal(null)} className="w-full bg-primary text-white py-3 rounded-btn font-bold min-h-[48px]">متوجه شدم</button>
           </div>
+        </Overlay>
+      )}
+
+      {modal?.type === 'pickShelf' && (
+        <Overlay>
+          <div className="text-center">
+            <IPin className="w-10 h-10 text-primary mx-auto mb-2" />
+            <h3 className="text-lg font-bold text-primary mb-1">این کد دو محل فیزیکی دارد</h3>
+            <p className="text-sm text-muted mb-1">{modal.product.fullName} · {modal.product.size}</p>
+            <p className="text-sm mb-3">از کدام محل فیزیکی شروع به شمارش می‌کنید؟</p>
+            <div className="space-y-2 mb-3">
+              {modal.shelves.map(c => (
+                <button key={c} onClick={() => choosePick(c)} className="w-full bg-primary text-white py-3 rounded-btn font-bold min-h-[52px]">
+                  <span dir="ltr" className="block text-lg">{c}</span>
+                  <span className="block text-xs text-white/80">{formatLocation(c)}</span>
+                </button>
+              ))}
+            </div>
+            <button onClick={() => setModal(null)} className="w-full border py-3 rounded-btn min-h-[48px]">انصراف (این اسکن نادیده گرفته شود)</button>
+          </div>
+        </Overlay>
+      )}
+
+      {modal?.type === 'roomEnd' && (
+        <Overlay>
+          <h3 className="text-lg font-bold text-primary mb-1">پایان شمارش اتاق</h3>
+          {modal.left.length === 0 ? (
+            <p className="text-sm text-success mb-4">همهٔ قفسه‌های این اتاق شمارش شده‌اند.</p>
+          ) : (
+            <>
+              <p className="text-sm text-muted mb-2">{toPersianDigits(modal.left.length)} محل فیزیکی هنوز تمام نشده است:</p>
+              <div className="max-h-56 overflow-auto space-y-1 mb-4">
+                {modal.left.map(l => (
+                  <div key={l.location_code} className="flex justify-between border rounded-btn px-3 py-2 text-sm">
+                    <span dir="ltr">{l.location_code}</span>
+                    <span className="text-muted">{toPersianDigits(l.counted_count)} از {toPersianDigits(l.need_count)} قلم</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+          <button onClick={finishRoom} className="w-full bg-success text-white py-3 rounded-btn font-bold min-h-[48px]">پایان اتاق</button>
+          <button onClick={() => setModal(null)} className="w-full mt-2 border py-3 rounded-btn min-h-[48px]">بازگشت به شمارش</button>
         </Overlay>
       )}
 
