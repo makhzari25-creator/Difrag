@@ -12,7 +12,8 @@
     "build": "npm run build:renderer && electron-builder --win --config build/electron-builder.yml",
     "rebuild": "electron-builder install-app-deps",
     "start": "electron .",
-    "test": "node tests/location-parse.test.js"
+    "test": "node tests/location-parse.test.js",
+    "test:room": "node --experimental-strip-types tests/room-mode.test.mts"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",

@@ -2,7 +2,12 @@ const persianDigits = ['۰','۱','۲','۳','۴','۵','۶','۷','۸','۹'];
 export function toPersianDigits(n: number | string): string {
   return String(n).replace(/\d/g, d => persianDigits[parseInt(d, 10)]);
 }
+export function formatRoom(code: string): string {
+  if (!code || code.length !== 4) return code || '—';
+  return `انبار ${toPersianDigits(code.slice(0,2))} · اتاق ${toPersianDigits(code.slice(2,4))}`;
+}
 export function formatLocation(code: string): string {
+  if (code && code.length === 4) return formatRoom(code);
   if (!code || code.length !== 8) return code || '—';
   return `انبار ${toPersianDigits(code.slice(0,2))} · اتاق ${toPersianDigits(code.slice(2,4))} · رگال ${toPersianDigits(code.slice(4,6))} · ردیف ${toPersianDigits(code.slice(6,8))}`;
 }

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useAppStore } from './stores/appStore';
-import { toPersianDigits, formatLocation, nowIso, getDeviceId, onDialog, askConfirm } from './lib/utils';
+import { toPersianDigits, formatLocation, formatRoom, nowIso, getDeviceId, onDialog, askConfirm } from './lib/utils';
+import { summarizeRooms } from '@shared/room';
 import { IHome, IScan, IChart, IUser, IPlay, IFolder, IUpload, IShield, ISearch, IX, IPin, IBox, IWarehouse, IExcel, ICalendar, IClock, IBox as IBox2, IReset, IRefresh, ICheck } from './icons';
 import type { DialogReq } from './lib/utils';
 
@@ -279,12 +280,16 @@ function Info({ t, v }: { t: string; v: number }) {
   return <div className="bg-bg rounded-btn px-3 py-2 flex justify-between"><span className="text-muted">{t}</span><b>{toPersianDigits(v)}</b></div>;
 }
 
-export function LocationsScreen({ onSelect }: { onSelect: (c: string) => void }) {
+export function LocationsScreen({ onSelect, onSelectRoom }: { onSelect: (c: string) => void; onSelectRoom?: (room: string) => void }) {
   const { excelVersion, userId } = useAppStore();
   const [locations, setLocations] = useState<any[]>([]);
   const [search, setSearch] = useState('');
+  const [mode, setMode] = useState<'shelf' | 'room'>('shelf');
   useEffect(() => { if (excelVersion?.id) window.difrag.getLocations(excelVersion.id).then(setLocations); }, [excelVersion]);
   const q = search.trim();
+  const allRooms = summarizeRooms(locations);
+  const rooms = allRooms.filter(r => !q || r.room.includes(q) || formatRoom(r.room).includes(q));
+  const roomView = mode === 'room' && !!onSelectRoom;
   const filtered = locations.filter(l => !q || l.location_code.includes(q) || formatLocation(l.location_code).includes(q));
   const status = (l: any) => {
     if (l.need_count > 0 && l.counted_count >= l.need_count) return { t: 'تکمیل‌شده', c: 'bg-success/15 text-success' };
@@ -296,16 +301,54 @@ export function LocationsScreen({ onSelect }: { onSelect: (c: string) => void })
       <div className="flex flex-wrap items-end justify-between gap-4 mb-5">
         <div>
           <h2 className="text-3xl font-extrabold text-primary relative inline-block">انتخاب مکان<span className="absolute -bottom-1.5 right-0 h-1 w-12 rounded bg-accent" /></h2>
-          <p className="text-muted mt-3">مکان مورد نظر را جستجو یا از لیست انتخاب کنید.</p>
+          <p className="text-muted mt-3">{roomView ? 'اتاق مورد نظر را انتخاب کنید؛ قفسه با اولین اسکن خودکار تشخیص داده می‌شود.' : 'مکان مورد نظر را جستجو یا از لیست انتخاب کنید.'}</p>
+          {onSelectRoom && (
+            <div className="mt-4 inline-flex rounded-btn border border-primary/15 bg-surface overflow-hidden" role="tablist" aria-label="نوع شمارش">
+              {([['shelf', 'محل فیزیکی'], ['room', 'شمارش کل اتاق']] as const).map(([k, t]) => (
+                <button key={k} role="tab" aria-selected={mode === k} onClick={() => setMode(k)}
+                  className={`px-5 py-2.5 text-sm font-bold min-h-[44px] ${mode === k ? 'bg-primary text-white' : 'text-primary'}`}>{t}</button>
+              ))}
+            </div>
+          )}
         </div>
         <div className="relative w-full md:w-96">
           <ISearch className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-muted" />
-          <input className="w-full border border-primary/15 rounded-card pr-12 pl-10 py-3 bg-surface shadow-card" placeholder="جستجو در مکان‌ها… یا تایپ کد ۸ رقمی و Enter" value={search} onChange={e => setSearch(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter' && /^\d{8}$/.test(q)) onSelect(q); }} />
+          <input className="w-full border border-primary/15 rounded-card pr-12 pl-10 py-3 bg-surface shadow-card" placeholder="جستجو… یا تایپ کد ۸ رقمی (محل) / ۴ رقمی (اتاق) و Enter" value={search} onChange={e => setSearch(e.target.value)}
+            onKeyDown={e => {
+              if (e.key !== 'Enter') return;
+              if (/^\d{8}$/.test(q)) onSelect(q);
+              else if (/^\d{4}$/.test(q) && onSelectRoom && allRooms.some(r => r.room === q)) onSelectRoom(q);
+            }} />
           {search && <button aria-label="پاک کردن" onClick={() => setSearch('')} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted"><IX className="w-5 h-5" /></button>}
         </div>
       </div>
-      <div className="grid md:grid-cols-2 gap-4">
+      {roomView && (
+        <div className="grid md:grid-cols-2 gap-4">
+          {rooms.map(r => {
+            const pct = r.shelves ? Math.round((r.doneShelves / r.shelves) * 100) : 0;
+            const st = r.shelves > 0 && r.doneShelves >= r.shelves ? { t: 'تکمیل‌شده', c: 'bg-success/15 text-success' }
+              : r.started ? { t: 'نیمه‌کاره', c: 'bg-accent/15 text-accent' } : { t: 'شمارش‌نشده', c: 'bg-muted/15 text-muted' };
+            return (
+              <button key={r.room} onClick={() => onSelectRoom!(r.room)} className="bg-surface rounded-card shadow-card border border-primary/5 p-4 text-right hover:border-accent transition-colors">
+                <div className="flex items-center gap-3 pb-3 border-b">
+                  <IWarehouse className="w-6 h-6 text-primary shrink-0" />
+                  <span className="bg-accent text-white rounded-full px-3 py-0.5 text-sm font-bold" dir="ltr">{toPersianDigits(r.room)}</span>
+                  <span className="text-sm text-text/80 mr-auto">{formatRoom(r.room)}</span>
+                </div>
+                <div className="flex gap-6 py-3">
+                  <div><div className="font-extrabold text-primary text-lg">{toPersianDigits(r.shelves)} قفسه</div><div className="text-xs text-muted">دارای موجودی</div></div>
+                  <div><div className="font-extrabold text-primary text-lg">{toPersianDigits(r.items)} قلم</div><div className="text-xs text-muted">اقلام</div></div>
+                  <div><div className="font-extrabold text-primary text-lg">{toPersianDigits(r.units)} عدد</div><div className="text-xs text-muted">موجودی اکسل</div></div>
+                </div>
+                <div className="h-2 rounded bg-primary/10 overflow-hidden mb-1"><div className="h-full bg-success" style={{ width: `${pct}%` }} /></div>
+                <div className="text-xs text-muted mb-3">{toPersianDigits(r.doneShelves)} از {toPersianDigits(r.shelves)} قفسه تمام شده</div>
+                <span className={`inline-flex items-center gap-1.5 text-xs px-3 py-1 rounded-full ${st.c}`}><span className="w-2 h-2 rounded-full bg-current" />{st.t}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {!roomView && <div className="grid md:grid-cols-2 gap-4">
         {filtered.map(loc => {
           const st = status(loc); const code: string = loc.location_code;
           return (
@@ -323,8 +366,8 @@ export function LocationsScreen({ onSelect }: { onSelect: (c: string) => void })
             </button>
           );
         })}
-      </div>
-      {!filtered.length && <p className="text-center text-muted py-10">مکانی نیست — ابتدا اکسل را بارگذاری کنید</p>}
+      </div>}
+      {(roomView ? !rooms.length : !filtered.length) && <p className="text-center text-muted py-10">{roomView ? 'اتاقی نیست — ابتدا اکسل را بارگذاری کنید' : 'مکانی نیست — ابتدا اکسل را بارگذاری کنید'}</p>}
     </div>
   );
 }

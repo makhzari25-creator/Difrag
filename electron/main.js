@@ -501,7 +501,8 @@ ipcMain.handle('get-stats', () => {
   const n = new Date();
   const today = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
   return {
-    sessionsToday: db.prepare("SELECT COUNT(*) as c FROM sessions WHERE date(started_at,'localtime') = ?").get(today).c,
+    // room-level sessions (4-digit location) only wrap shelf sessions; count real shelf sessions once
+    sessionsToday: db.prepare("SELECT COUNT(*) as c FROM sessions WHERE length(location_code) = 8 AND status != 'cancelled' AND date(started_at,'localtime') = ?").get(today).c,
     itemsToday: db.prepare("SELECT COUNT(*) as c FROM item_results WHERE date(recorded_at,'localtime') = ?").get(today).c,
     pending: db.prepare("SELECT COUNT(*) as c FROM item_results WHERE status = 'pending' AND superseded = 0").get().c,
     matchToday: db.prepare("SELECT COUNT(*) as c FROM item_results WHERE date(recorded_at,'localtime') = ? AND result_type = 'match'").get(today).c,

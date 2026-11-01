@@ -25,10 +25,12 @@ export default function App() {
     setCurrentSession({ id: s.id, locationCode: s.location_code, startedByUserId: s.started_by_user_id, startedByName: s.started_by_name, startedByRole: s.started_by_role, startedAt: s.started_at, endedAt: null, status: 'active', excelVersionId: s.excel_version_id } as any);
     setCurrentLocation(s.location_code); setCounting(true);
   };
-  const exitCounting = async () => {
-    if (currentSession) await window.difrag.updateSession({ id: currentSession.id, status: 'paused', endedAt: null });
+  // status: what to do with the main session on exit. Room runs may end it ('completed'/'cancelled')
+  // when a paused shelf session already carries the resume point.
+  const exitCounting = async (status: 'paused' | 'completed' | 'cancelled' = 'paused') => {
+    if (currentSession) await window.difrag.updateSession({ id: currentSession.id, status, endedAt: status === 'paused' ? null : nowIso() });
     setCounting(false); setCurrentSession(null); setScreen('home');
-    addToast('info', 'شمارش نیمه‌کاره ذخیره شد؛ از «ادامه شمارش» برگردید');
+    if (status !== 'cancelled') addToast('info', 'شمارش نیمه‌کاره ذخیره شد؛ از «ادامه شمارش» برگردید');
   };
   const quit = async () => {
     if (profile) await window.difrag.logAuthEvent({ userId, fullName: profile.fullName, isManager: profile.isManager, type: 'logout', timestamp: nowIso(), deviceId: getDeviceId(), detail: null });
@@ -60,7 +62,7 @@ export default function App() {
   return (
     <>
       {screen === 'home' && <HomeScreen onNav={setScreen} onResume={resume} />}
-      {screen === 'locations' && <LocationsScreen onSelect={c => setPreLoc(c)} />}
+      {screen === 'locations' && <LocationsScreen onSelect={c => setPreLoc(c)} onSelectRoom={startSession} />}
       {screen === 'reports' && <ReportsScreen />}
       {screen === 'profile' && <ProfileScreen onChange={() => setScreen('welcome')} onQuit={quit} />}
       <Nav active={screen} onNav={setScreen} />
