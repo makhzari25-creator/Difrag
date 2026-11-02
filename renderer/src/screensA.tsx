@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useAppStore } from './stores/appStore';
 import { toPersianDigits, formatLocation, formatRoom, nowIso, getDeviceId, onDialog, askConfirm } from './lib/utils';
 import { summarizeRooms } from '@shared/room';
@@ -127,11 +127,25 @@ export function HomeScreen({ onNav, onResume }: { onNav: (s: string) => void; on
     if (userId) window.difrag.getActiveSessionForUser(userId).then((s: any) => setResumable(s || null));
   };
   useEffect(load, [userId]);
-  const pickExcel = async (mode: 'new' | 'update') => {
-    const path = await window.difrag.selectExcelFile();
-    if (!path) return;
+  const startImport = (path: string, mode: 'new' | 'update') => {
     (window as any).__pendingExcel = path; (window as any).__importMode = mode;
     setScreen('import');
+  };
+  const pickExcel = async (mode: 'new' | 'update') => {
+    const path = await window.difrag.selectExcelFile();
+    if (path) startImport(path, mode);
+  };
+  // drag & drop an Excel file anywhere on the home screen
+  const [dragging, setDragging] = useState(false);
+  const dragDepth = useRef(0);
+  const hasFiles = (e: React.DragEvent) => Array.from(e.dataTransfer?.types || []).includes('Files');
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault(); dragDepth.current = 0; setDragging(false);
+    const f = e.dataTransfer.files?.[0]; if (!f) return;
+    if (!/\.xlsx?$/i.test(f.name)) { addToast('error', 'فقط فایل اکسل (xlsx یا xls) را رها کنید'); return; }
+    const path = window.difrag.getPathForFile?.(f);
+    if (!path) { addToast('error', 'مسیر فایل خوانده نشد؛ از دکمهٔ بارگذاری اکسل استفاده کنید'); return; }
+    startImport(path, excelVersion ? 'update' : 'new');
   };
   const reset = async () => {
     if (!(await askConfirm('ریست شمارش: همه اقلام دوباره «شمارش‌نشده» می‌شوند ولی گزارش‌ها پاک نمی‌شوند. ادامه می‌دهید؟'))) return;
@@ -142,23 +156,54 @@ export function HomeScreen({ onNav, onResume }: { onNav: (s: string) => void; on
   };
   const hasExcel = !!excelVersion;
   return (
-    <div className="pb-24 p-5 max-w-4xl mx-auto">
+    <div className="pb-24 p-5 max-w-4xl mx-auto min-h-screen"
+      onDragEnter={e => { if (hasFiles(e)) { dragDepth.current++; setDragging(true); } }}
+      onDragOver={e => { if (hasFiles(e)) e.preventDefault(); }}
+      onDragLeave={e => { if (hasFiles(e) && --dragDepth.current <= 0) { dragDepth.current = 0; setDragging(false); } }}
+      onDrop={onDrop}>
+      {dragging && (
+        <div className="fixed inset-0 z-50 bg-primary/70 flex items-center justify-center pointer-events-none">
+          <div className="bg-surface rounded-card shadow-card border-4 border-dashed border-accent px-10 py-12 text-center">
+            <IUpload className="w-14 h-14 text-accent mx-auto mb-2" />
+            <div className="text-2xl font-extrabold text-primary">فایل اکسل را اینجا رها کنید</div>
+            <div className="text-sm text-muted mt-1">{hasExcel ? 'به‌عنوان آپدیت اکسل فعلی' : 'به‌عنوان اکسل اصلی'}</div>
+          </div>
+        </div>
+      )}
       <div className="flex items-start justify-between mb-5">
         <div>
           <div className="flex items-center gap-3"><IUser className="w-7 h-7 text-primary" /><h1 className="text-2xl font-extrabold text-primary">سلام، {profile?.fullName}</h1></div>
           <div className="mt-2 mr-10"><RoleChip isManager={!!profile?.isManager} /></div>
         </div>
       </div>
-      <button onClick={() => hasExcel ? onNav('locations') : addToast('error', 'ابتدا اکسل را بارگذاری کنید')}
-        className="relative w-full bg-accent text-white py-5 rounded-card font-extrabold text-2xl shadow-card min-h-[72px] flex items-center justify-center">
-        <span className="absolute left-5 w-12 h-12 rounded-full bg-black/15 flex items-center justify-center"><IPlay className="w-6 h-6" /></span>
-        شروع شمارش جدید
-      </button>
-      <button onClick={() => resumable ? onResume(resumable) : addToast('info', 'شمارش نیمه‌کاره‌ای وجود ندارد')}
-        className="relative w-full mt-3 bg-surface border border-primary/10 text-primary py-4 rounded-card font-bold text-xl shadow-card min-h-[64px] flex items-center justify-center">
-        <span className="absolute left-5 text-primary"><IFolder className="w-8 h-8" /></span>
-        ادامه شمارش{resumable && <span className="mr-3 text-sm font-normal text-muted">{formatLocation(resumable.location_code)}</span>}
-      </button>
+      {!hasExcel ? (
+        <button onClick={() => pickExcel('new')}
+          className="relative w-full bg-accent text-white py-5 rounded-card font-extrabold text-2xl shadow-card min-h-[72px] flex items-center justify-center">
+          <span className="absolute left-5 w-12 h-12 rounded-full bg-black/15 flex items-center justify-center"><IUpload className="w-6 h-6" /></span>
+          بارگذاری اکسل
+        </button>
+      ) : resumable ? (
+        <>
+          <button onClick={() => onResume(resumable)}
+            className="relative w-full bg-accent text-white py-5 rounded-card font-extrabold text-2xl shadow-card min-h-[72px] flex flex-col items-center justify-center">
+            <span className="absolute left-5 w-12 h-12 rounded-full bg-black/15 flex items-center justify-center"><IPlay className="w-6 h-6" /></span>
+            ادامه شمارش
+            <span className="text-sm font-normal text-white/85 mt-0.5">{formatLocation(resumable.location_code)}</span>
+          </button>
+          <button onClick={() => onNav('locations')}
+            className="relative w-full mt-3 bg-surface border border-primary/10 text-primary py-4 rounded-card font-bold text-xl shadow-card min-h-[64px] flex items-center justify-center">
+            <span className="absolute left-5 text-primary"><IFolder className="w-8 h-8" /></span>
+            شروع شمارش جدید
+          </button>
+        </>
+      ) : (
+        <button onClick={() => onNav('locations')}
+          className="relative w-full bg-accent text-white py-5 rounded-card font-extrabold text-2xl shadow-card min-h-[72px] flex items-center justify-center">
+          <span className="absolute left-5 w-12 h-12 rounded-full bg-black/15 flex items-center justify-center"><IPlay className="w-6 h-6" /></span>
+          شروع شمارش جدید
+        </button>
+      )}
+      {hasExcel && <p className="text-xs text-muted text-center mt-2">نکته: برچسب ۸ رقمی قفسه را اسکن کنید تا شمارش همان‌جا شروع شود.</p>}
       <div className="grid grid-cols-3 gap-3 my-4">
         <StatCard Icon={ICalendar} label="سشن‌های امروز" value={stats.sessionsToday || 0} cls="text-primary" />
         <StatCard Icon={IBox2} label="قلم‌های شمارش‌شده امروز" value={stats.itemsToday || 0} cls="text-accent" />
@@ -209,30 +254,36 @@ export function ImportScreen({ onDone }: { onDone: () => void }) {
   const [filePath, setFilePath] = useState<string | null>(null);
   const call = (confirm: boolean, p: string) => (mode === 'update' ? window.difrag.updateExcel : window.difrag.importExcel)({ filePath: p, uploadedBy: profile?.fullName || '', confirm });
 
+  const autoStarted = useRef(false);
+  const doActivate = async (p: string, auto = false) => {
+    setActivating(true);
+    try {
+      const res: any = await call(true, p);
+      if (!res.success) { setError((res.errors || []).join('\n')); setActivating(false); setLoading(false); return; }
+      setExcelVersion(await window.difrag.getActiveExcel());
+      addToast('success', mode === 'update' ? 'اکسل آپدیت شد؛ شمارش با اکسل جدید ادامه می‌یابد' : auto ? 'اکسل بدون مشکل بود و فعال شد' : 'اکسل فعال شد');
+      onDone();
+    } catch (e: any) { setError(String(e)); setActivating(false); setLoading(false); }
+  };
+
   useEffect(() => {
     const path = (window as any).__pendingExcel;
     if (!path) { setError('فایلی انتخاب نشده'); setLoading(false); return; }
     setFilePath(path);
     call(false, path).then((res: any) => {
-      setLoading(false);
       setSummary(res.summary); setDiff(res.diff || null);
-      if (!res.success) setError((res.errors || []).join('\n'));
+      if (!res.success) { setError((res.errors || []).join('\n')); setLoading(false); return; }
+      // Clean file (no errors, no warnings, nothing already counted would change, nothing removed): activate without asking.
+      const d = res.diff;
+      const clean = !(res.summary?.warnings || []).length && (!d?.hasActive || ((d.affectedCount || 0) === 0 && (d.removed || 0) === 0));
+      if (clean && !autoStarted.current) { autoStarted.current = true; doActivate(path, true); return; }
+      setLoading(false);
     }).catch((e: any) => { setLoading(false); setError(String(e)); });
   }, []);
 
-  const activate = async () => {
-    if (!filePath) return;
-    setActivating(true);
-    try {
-      const res: any = await call(true, filePath);
-      if (!res.success) { setError((res.errors || []).join('\n')); setActivating(false); return; }
-      setExcelVersion(await window.difrag.getActiveExcel());
-      addToast('success', mode === 'update' ? 'اکسل آپدیت شد؛ شمارش با اکسل جدید ادامه می‌یابد' : 'اکسل فعال شد');
-      onDone();
-    } catch (e: any) { setError(String(e)); setActivating(false); }
-  };
+  const activate = async () => { if (filePath) await doActivate(filePath); };
 
-  if (loading) return <div className="p-10 text-center text-primary font-medium">در حال اعتبارسنجی اکسل…</div>;
+  if (loading || (activating && !error && !summary)) return <div className="p-10 text-center text-primary font-medium">{activating ? 'در حال فعال‌سازی اکسل…' : 'در حال اعتبارسنجی اکسل…'}</div>;
   return (
     <div className="p-5 max-w-2xl mx-auto pb-20">
       <h2 className="text-2xl font-extrabold text-primary mb-4">{mode === 'update' ? 'آپدیت اکسل' : 'نتیجه اعتبارسنجی اکسل'}</h2>
@@ -290,6 +341,10 @@ export function LocationsScreen({ onSelect, onSelectRoom }: { onSelect: (c: stri
   const allRooms = summarizeRooms(locations);
   const rooms = allRooms.filter(r => !q || r.room.includes(q) || formatRoom(r.room).includes(q));
   const roomView = mode === 'room' && !!onSelectRoom;
+  // "next shelf": first not-finished shelf after the one just counted (wraps to the first one)
+  const after = useAppStore(st => st.currentLocation) || '';
+  const unfinished = locations.filter(l => l.need_count > 0 && l.counted_count < l.need_count).sort((a, b) => a.location_code.localeCompare(b.location_code));
+  const nextLoc = unfinished.find(l => l.location_code > after) || unfinished[0];
   const filtered = locations.filter(l => !q || l.location_code.includes(q) || formatLocation(l.location_code).includes(q));
   const status = (l: any) => {
     if (l.need_count > 0 && l.counted_count >= l.need_count) return { t: 'تکمیل‌شده', c: 'bg-success/15 text-success' };
@@ -322,6 +377,12 @@ export function LocationsScreen({ onSelect, onSelectRoom }: { onSelect: (c: stri
           {search && <button aria-label="پاک کردن" onClick={() => setSearch('')} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted"><IX className="w-5 h-5" /></button>}
         </div>
       </div>
+      {!roomView && nextLoc && !q && (
+        <button onClick={() => onSelect(nextLoc.location_code)}
+          className="w-full mb-4 bg-accent text-white py-4 rounded-card font-extrabold text-lg min-h-[60px] shadow-card flex items-center justify-center gap-2">
+          <IPlay className="w-5 h-5" />{after ? 'قفسه بعدی' : 'شروع از اولین قفسه شمارش‌نشده'}: <span dir="ltr">{nextLoc.location_code}</span>
+        </button>
+      )}
       {roomView && (
         <div className="grid md:grid-cols-2 gap-4">
           {rooms.map(r => {
