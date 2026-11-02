@@ -44,7 +44,8 @@ export function useScanner({ onScan, enabled = true }: ScannerOptions) {
       lastKeyTimeRef.current = now;
 
       if (e.key === 'Enter' || e.key === 'Tab') {
-        e.preventDefault();
+        // only swallow the key when a scan is in progress, so Enter/Tab still work on buttons elsewhere
+        if (bufferRef.current) e.preventDefault();
         const intervals = intervalsRef.current;
         const avg = intervals.length
           ? intervals.reduce((a, b) => a + b, 0) / intervals.length

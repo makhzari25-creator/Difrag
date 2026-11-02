@@ -464,6 +464,12 @@ function insertResult(result) {
 }
 ipcMain.handle('save-item-result', (_e, result) => insertResult(result));
 ipcMain.handle('save-item-results', (_e, results) => getDb().transaction(list => list.map(insertResult))(results || []));
+// Undo window after an auto-saved "match" group: removes only the rows just inserted (by id).
+ipcMain.handle('delete-item-results', (_e, ids) => {
+  const db = getDb();
+  const del = db.prepare('DELETE FROM item_results WHERE id = ?');
+  return db.transaction(list => list.reduce((n, id) => n + del.run(String(id)).changes, 0))(Array.isArray(ids) ? ids : []);
+});
 ipcMain.handle('update-item-result', (_e, { id, status, reviewedByName, reviewedByRole, reviewedAt, managerNote }) => {
   getDb().prepare('UPDATE item_results SET status=?, reviewed_by_name=?, reviewed_by_role=?, reviewed_at=?, manager_note=? WHERE id=?')
     .run(status, reviewedByName, reviewedByRole, reviewedAt, managerNote, id);

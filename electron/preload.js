@@ -1,5 +1,8 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 contextBridge.exposeInMainWorld('difrag', {
+  // Electron >= 32 no longer exposes File.path; needed for drag & drop of the Excel file
+  getPathForFile: (file) => { try { return webUtils.getPathForFile(file) || null; } catch (_) { return null; } },
+  deleteItemResults: (ids) => ipcRenderer.invoke('delete-item-results', ids),
   getDataDir: () => ipcRenderer.invoke('get-data-dir'),
   getBuildId: () => ipcRenderer.invoke('get-build-id'),
   log: (level, msg, meta) => ipcRenderer.invoke('log', level, msg, meta),

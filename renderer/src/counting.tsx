@@ -48,6 +48,13 @@ export function CountingScreen({ locationCode, sessionId, onFinish, onExit }: { 
   const savedRef = useRef(0);                         // results saved in this whole run
   const shelfSavedRef = useRef(0);                    // results saved on the current shelf
   const streakRef = useRef<{ shelf: string; n: number } | null>(null);
+  const lastBarcodeRef = useRef<string | null>(null); // last scanned size: a short number typed in the scan box sets its quantity
+  type UndoSnap = { ids: string[]; rows: Row[]; siblings: Product[]; key: string | null; sid: string; shelf: string | null; n: number; until: number };
+  const [undo, setUndo] = useState<UndoSnap | null>(null);
+  const undoRef = useRef<UndoSnap | null>(null);
+  const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearUndo = () => { if (undoTimer.current) { clearTimeout(undoTimer.current); undoTimer.current = null; } undoRef.current = null; setUndo(null); };
+  useEffect(() => () => { if (undoTimer.current) clearTimeout(undoTimer.current); }, []);
   const setShelf = (c: string | null) => { shelfRef.current = c; setShelfState(c); };
   const curLoc = () => shelfRef.current ?? locationCode;
   const sessId = () => (roomMode ? shelfSessRef.current || sessionId : sessionId);
@@ -103,13 +110,15 @@ export function CountingScreen({ locationCode, sessionId, onFinish, onExit }: { 
     const ref = refOf(p); const diff = physical - ref; return { product: p, physical, ref, diff, type: typeOf(diff) };
   };
 
-  const openSummary = (pending: { code: string; method: 'scanner' | 'manual' } | null, thenFinish = false) => {
+  const openSummary = async (pending: { code: string; method: 'scanner' | 'manual' } | null, thenFinish = false) => {
     const lines = buildLines();
     if (!lines.length) { clearGroup(); return false; }
+    // everything matches the Excel: nothing to decide, save right away (a short "undo" bar stays visible)
+    if (lines.every(l => l.type === 'match')) { await commit({ lines, pending, thenFinish }, true); return true; }
     setModal({ type: 'summary', lines, pending, thenFinish });
     return true;
   };
-  const clearGroup = () => { setRows([]); setSiblings([]); setGKey(null); };
+  const clearGroup = () => { setRows([]); setSiblings([]); setGKey(null); lastBarcodeRef.current = null; };
 
   const process = async (barcode: string, method: 'scanner' | 'manual') => {
     if (!versionId) return;
@@ -157,8 +166,9 @@ export function CountingScreen({ locationCode, sessionId, onFinish, onExit }: { 
     }
     streakRef.current = null;
     const key = groupKeyOf(barcode);
-    if (keyRef.current && keyRef.current !== key) { openSummary({ code: barcode, method }); return; }
+    if (keyRef.current && keyRef.current !== key) { await openSummary({ code: barcode, method }); return; }
     if (!keyRef.current) {
+      clearUndo(); // a new item is open: the previous auto-saved group can no longer be restored
       const g: Product[] = await window.difrag.getGroup({ barcode, versionId });
       setSiblings(g); setGKey(key);
     }
@@ -173,8 +183,19 @@ export function CountingScreen({ locationCode, sessionId, onFinish, onExit }: { 
     } else {
       setRows(rowsRef.current.map((r, i) => i !== idx ? r : { ...r, qty: r.qty + 1, scanner: r.scanner + (method === 'scanner' ? 1 : 0), manual: r.manual + (method === 'manual' ? 1 : 0) }));
     }
+    lastBarcodeRef.current = barcode;
     await logEvent(method === 'manual' ? 'manual' : 'scan', product, 1, { scanMethod: method });
     playBeep(800, 60); vibrate(50);
+  };
+  // A 1–4 digit number typed in the scan box = quantity of the last scanned size (no +/- clicking).
+  const quickQty = (n: number) => {
+    const bc = lastBarcodeRef.current;
+    const row = bc ? rowsRef.current.find(r => r.product.barcode === bc) : null;
+    if (!bc || !row) { addToast('error', 'ابتدا بارکد یک سایز را اسکن کنید، بعد تعداد را بنویسید'); return; }
+    queue.current = queue.current.then(async () => {
+      await setQty(bc, n);
+      addToast('info', `سایز ${row.product.size}: تعداد ${toPersianDigits(n)}`);
+    }).catch(e => { addToast('error', 'خطا: ' + (e?.message || e)); });
   };
   const handleScan = useCallback((barcode: string, method: 'scanner' | 'manual') => {
     queue.current = queue.current.then(() => process(barcode, method)).catch(e => { addToast('error', 'خطا: ' + (e?.message || e)); });
@@ -191,23 +212,47 @@ export function CountingScreen({ locationCode, sessionId, onFinish, onExit }: { 
   const confirmSummary = async () => {
     if (modal?.type !== 'summary') return;
     const m = modal; setModal(null);
-    await window.difrag.saveItemResults(m.lines.map(l => ({
-      sessionId: sessId(), barcode: l.product.barcode, productId: l.product.id, excelReferenceQty: l.ref, physicalQty: l.physical,
+    await commit(m, false);
+  };
+  // Saves one item group. auto = every size matched the Excel, so no dialog was shown.
+  const commit = async (m: { lines: Line[]; pending: { code: string; method: 'scanner' | 'manual' } | null; thenFinish: boolean }, auto: boolean) => {
+    const sid = sessId();
+    const snapRows = rowsRef.current; const snapSib = sibRef.current; const snapKey = keyRef.current; const snapShelf = shelfRef.current;
+    const ids: string[] = await window.difrag.saveItemResults(m.lines.map(l => ({
+      sessionId: sid, barcode: l.product.barcode, productId: l.product.id, excelReferenceQty: l.ref, physicalQty: l.physical,
       diff: l.diff, resultType: l.type, userId, userFullName: profile?.fullName, userRole: role, recordedAt: nowIso(),
-      status: l.type === 'match' ? 'confirmed' : 'pending', note: l.physical === 0 && !rowsRef.current.some(r => r.product.barcode === l.product.barcode) ? 'not_scanned_in_group' : null
+      status: l.type === 'match' ? 'confirmed' : 'pending', note: l.physical === 0 && !snapRows.some(r => r.product.barcode === l.product.barcode) ? 'not_scanned_in_group' : null
     })));
     const first = m.lines[0]?.product;
     setDone(d => [{ title: first ? `${first.fullName}` : '—', lines: m.lines }, ...d]);
     savedRef.current += m.lines.length; shelfSavedRef.current += m.lines.length;
     clearGroup();
-    addToast('success', 'مغایرت‌های این جنس ثبت شد');
+    addToast('success', auto ? 'مطابق بود؛ ثبت شد ✓' : 'مغایرت‌های این جنس ثبت شد');
     if (roomMode) await refreshShelves();
-    if (m.thenFinish) await finishLocation();
-    else {
-      // room mode: the shelf ends by itself once every expected item has been counted
-      if (roomMode && shelfRef.current && await shelfIsDone()) await completeShelf();
-      if (m.pending) handleScan(m.pending.code, m.pending.method);
+    if (m.thenFinish) { await finishLocation(); return; }
+    // room mode: the shelf ends by itself once every expected item has been counted
+    const shelfEnded = roomMode && !!shelfRef.current && await shelfIsDone();
+    if (shelfEnded) await completeShelf();
+    if (m.pending) handleScan(m.pending.code, m.pending.method);
+    else if (auto && !shelfEnded && Array.isArray(ids) && ids.length) {
+      // short undo window; only valid while no other item has been opened
+      const snap: UndoSnap = { ids, rows: snapRows, siblings: snapSib, key: snapKey, sid, shelf: snapShelf, n: m.lines.length, until: Date.now() + 6000 };
+      clearUndo(); undoRef.current = snap; setUndo(snap);
+      undoTimer.current = setTimeout(clearUndo, 6000);
     }
+  };
+  const undoLast = async () => {
+    const u = undoRef.current; clearUndo();
+    if (!u) return;
+    if (keyRef.current || sessId() !== u.sid) { addToast('error', 'دیگر امکان برگشت نیست'); return; }
+    await window.difrag.deleteItemResults(u.ids);
+    savedRef.current = Math.max(0, savedRef.current - u.n); shelfSavedRef.current = Math.max(0, shelfSavedRef.current - u.n);
+    setDone(d => d.slice(1));
+    setRows(u.rows); setSiblings(u.siblings); setGKey(u.key);
+    lastBarcodeRef.current = u.rows.length ? u.rows[u.rows.length - 1].product.barcode : null;
+    if (u.rows[0]) await logEvent('undo_group', u.rows[0].product, 0, { note: 'auto_match_undone' });
+    if (roomMode) await refreshShelves();
+    addToast('info', 'برگشت داده شد؛ شمارش را اصلاح کنید');
   };
   const backToCounting = () => {
     if (modal?.type === 'summary' && modal.pending) addToast('info', 'بارکد جدید شمارش نشد؛ پس از اصلاح دوباره اسکن کنید');
@@ -216,7 +261,7 @@ export function CountingScreen({ locationCode, sessionId, onFinish, onExit }: { 
 
   const finishLocation = async () => {
     if (roomMode && !shelfRef.current) return;
-    if (keyRef.current && rowsRef.current.length) { openSummary(null, true); return; }
+    if (keyRef.current && rowsRef.current.length) { await openSummary(null, true); return; }
     const items: Product[] = await window.difrag.getUnscanned({ locationCode: curLoc(), versionId });
     if (!items.length) { await complete(); return; }
     setModal({ type: 'unscanned', items, selected: new Set(items.filter(i => i.locations.length === 1).map(i => i.id)) });
@@ -288,7 +333,12 @@ export function CountingScreen({ locationCode, sessionId, onFinish, onExit }: { 
   const allMatch = modal?.type === 'summary' && modal.lines.every(l => l.type === 'match');
   const exit = async () => {
     if (!(await askConfirm('از شمارش این محل خارج می‌شوید؟ شمارش‌های ثبت‌شده حفظ می‌شود و جنس باز (ثبت‌نشده) از دست می‌رود.'))) return;
-    if (!roomMode) { onExit(); return; }
+    if (!roomMode) {
+      // a shelf opened by mistake (nothing saved) must not linger as a resumable "unfinished" session
+      const saved = await window.difrag.getItemResults({ sessionId });
+      onExit(Array.isArray(saved) && saved.length ? 'paused' : 'cancelled');
+      return;
+    }
     // room run: a paused shelf session carries the resume point; the room session ends unless
     // earlier shelves were saved and no shelf is open (then resume re-enters room mode).
     const sid = shelfSessRef.current;
@@ -347,7 +397,7 @@ export function CountingScreen({ locationCode, sessionId, onFinish, onExit }: { 
           );
         })()}
         <div className="bg-surface rounded-card shadow-card p-4 border border-primary/5">
-          <label className="block text-sm text-muted mb-2">بارکد را اسکن کنید (یا تایپ کنید و Enter بزنید)</label>
+          <label className="block text-sm text-muted mb-2">بارکد را اسکن کنید. برای تعداد زیاد، بعد از اسکن یک سایز، عدد را همین‌جا بنویسید و Enter بزنید (مثلاً ۱۲)</label>
           <input ref={inputRef} dir="ltr" inputMode="numeric" disabled={!!modal} data-scanner="true"
             className="w-full border-2 border-accent/40 focus:border-accent outline-none rounded-btn px-4 py-4 text-center font-mono text-xl bg-bg"
             placeholder="۱۲۱۹۱۳۲۷۲۱۰۷۱"
@@ -360,7 +410,8 @@ export function CountingScreen({ locationCode, sessionId, onFinish, onExit }: { 
                 const gaps = t.slice(1).map((x, i) => x - t[i]);
                 const avg = gaps.length ? gaps.reduce((a, b) => a + b, 0) / gaps.length : 999;
                 if (/^\d{8,20}$/.test(v)) { handleScan(v, avg < 25 && v.length >= 8 ? 'scanner' : 'manual'); el.value = ''; }
-                else { addToast('error', 'بارکد باید ۸ تا ۲۰ رقم باشد'); }
+                else if (/^\d{1,4}$/.test(v)) { quickQty(parseInt(v, 10)); el.value = ''; }
+                else { addToast('error', 'بارکد باید ۸ تا ۲۰ رقم باشد (یا یک عدد کوتاه برای تعداد)'); }
               }
             }} />
         </div>
@@ -408,7 +459,7 @@ export function CountingScreen({ locationCode, sessionId, onFinish, onExit }: { 
               </div>
             ))}
             <p className="text-xs text-muted">برای تعداد زیاد، عدد را مستقیم در کادر شمارش بنویسید (ثبت دستی). اسکن بارکد سایز دیگرِ همین جنس به این فهرست اضافه می‌شود؛ بارکد جنس دیگر، این جنس را می‌بندد.</p>
-            <button onClick={() => openSummary(null)} className="w-full bg-primary text-white py-4 rounded-card font-extrabold text-xl min-h-[60px] flex items-center justify-center gap-2"><ICheck className="w-6 h-6" />پایان شمارش این کد</button>
+            <button onClick={() => { openSummary(null); }} className="w-full bg-primary text-white py-4 rounded-card font-extrabold text-xl min-h-[60px] flex items-center justify-center gap-2"><ICheck className="w-6 h-6" />پایان شمارش این کد</button>
           </>
         ) : (
           <div className="text-center text-muted py-12 bg-surface/60 rounded-card border border-dashed">هنوز جنسی در حال شمارش نیست — اولین بارکد را اسکن کنید</div>
@@ -425,6 +476,7 @@ export function CountingScreen({ locationCode, sessionId, onFinish, onExit }: { 
         ))}
       </div>
 
+      {undo && <UndoBar until={undo.until} onUndo={undoLast} />}
       <div className="fixed bottom-0 inset-x-0 p-4 bg-gradient-to-t from-bg via-bg to-transparent">
         {roomMode ? (
           <div className="max-w-4xl mx-auto flex gap-2">
@@ -546,6 +598,23 @@ export function CountingScreen({ locationCode, sessionId, onFinish, onExit }: { 
           <button onClick={registerUnscanned} className="w-full mt-2 bg-system text-white py-3 rounded-btn font-bold min-h-[48px]">ثبت مغایرت سیستمی (انتخاب‌شده‌ها) و اتمام محل</button>
         </Overlay>
       )}
+    </div>
+  );
+}
+
+function UndoBar({ until, onUndo }: { until: number; onUndo: () => void }) {
+  const [left, setLeft] = useState(Math.max(0, Math.ceil((until - Date.now()) / 1000)));
+  useEffect(() => {
+    const t = setInterval(() => setLeft(Math.max(0, Math.ceil((until - Date.now()) / 1000))), 250);
+    return () => clearInterval(t);
+  }, [until]);
+  return (
+    <div className="fixed bottom-24 inset-x-0 z-40 flex justify-center px-4 pointer-events-none">
+      <div role="status" className="pointer-events-auto bg-success text-white rounded-card shadow-card px-4 py-2 flex items-center gap-3 max-w-md w-full">
+        <ICheck className="w-6 h-6 shrink-0" />
+        <span className="flex-1 font-bold">مطابق بود؛ ثبت شد</span>
+        <button onClick={onUndo} className="bg-white/20 hover:bg-white/30 rounded-btn px-4 py-2 font-bold min-h-[44px]">برگشت ({toPersianDigits(left)})</button>
+      </div>
     </div>
   );
 }
