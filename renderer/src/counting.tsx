@@ -5,6 +5,7 @@ import { toPersianDigits, formatLocation, formatRoom, nowIso, getDeviceId, playB
 import type { Product } from '@shared/types';
 import { detectShelf, isShelfDone, needsCount, shelvesOfRoom, unfinishedShelves } from '@shared/room';
 import { RoleChip } from './screensA';
+import { RES_ICON, resultPhrase, resultHint } from './lib/wording';
 import { IBack, IShield, IShirt, IPin, ICheck, IBox, IMinus, IPlus, IKeyboard, IWarehouse } from './icons';
 
 type ResType = 'match' | 'system_transfer' | 'physical_transfer';
@@ -21,17 +22,10 @@ const refOf = (p: Product) => (p.effectiveReferenceQty != null ? p.effectiveRefe
 const sizeCode = (b: string) => b.slice(10, 12);
 const groupKeyOf = (b: string) => b.slice(0, 10) + b.slice(12);
 const typeOf = (d: number): ResType => (d === 0 ? 'match' : d < 0 ? 'system_transfer' : 'physical_transfer');
-const label: Record<ResType, string> = { match: 'مطابق', system_transfer: 'کسر سیستمی', physical_transfer: 'انتقال فیزیکی' };
 const tone: Record<ResType, string> = {
   match: 'border-success bg-success/10 text-success',
   system_transfer: 'border-system bg-system/10 text-system',
   physical_transfer: 'border-physical bg-physical/10 text-physical'
-};
-const sentence = (l: Line) => {
-  const n = toPersianDigits(Math.abs(l.diff));
-  if (l.type === 'match') return `${l.product.size}: مطابق`;
-  if (l.type === 'system_transfer') return `${l.product.size}: ${n} عدد از سیستم کم شود (کسر سیستمی)`;
-  return `${l.product.size}: ${n} عدد به سالن منتقل شود (انتقال فیزیکی)`;
 };
 
 // locationCode: 8 digits = one physical location (original flow);
@@ -227,7 +221,7 @@ export function CountingScreen({ locationCode, sessionId, onFinish, onExit }: { 
     setDone(d => [{ title: first ? `${first.fullName}` : '—', lines: m.lines }, ...d]);
     savedRef.current += m.lines.length; shelfSavedRef.current += m.lines.length;
     clearGroup();
-    addToast('success', auto ? 'مطابق بود؛ ثبت شد ✓' : 'مغایرت‌های این جنس ثبت شد');
+    addToast('success', auto ? 'مطابق بود؛ ثبت شد ✓' : 'نتیجهٔ این جنس ثبت شد');
     if (roomMode) await refreshShelves();
     if (m.thenFinish) { await finishLocation(); return; }
     // room mode: the shelf ends by itself once every expected item has been counted
@@ -323,7 +317,7 @@ export function CountingScreen({ locationCode, sessionId, onFinish, onExit }: { 
         status: 'pending', note: 'not_scanned'
       })));
       savedRef.current += chosen.length; shelfSavedRef.current += chosen.length;
-      addToast('success', `${toPersianDigits(chosen.length)} مغایرت سیستمی ثبت شد`);
+      addToast('success', `${toPersianDigits(chosen.length)} قلم «کم است» ثبت شد`);
     }
     await complete();
   };
@@ -355,18 +349,23 @@ export function CountingScreen({ locationCode, sessionId, onFinish, onExit }: { 
     <div className="pb-28 min-h-full bg-bg">
       <header className="sticky top-0 z-30 bg-primary text-white px-5 py-3 flex items-center gap-4 border-b-4 border-accent/70">
         <button onClick={exit} aria-label="خروج از شمارش" className="w-11 h-11 rounded-full border-2 border-white/80 flex items-center justify-center shrink-0"><IBack className="w-6 h-6 rotate-180" /></button>
-        <div className="flex-1">
-          <div className="font-extrabold text-lg leading-tight">کارت آیتم</div>
-          <div className="text-xs text-white/70">{roomMode ? `شمارش کل اتاق · ${formatRoom(locationCode)}` : formatLocation(locationCode)}</div>
+        <div className="flex-1 min-w-0">
+          <div className="font-extrabold text-xl leading-tight truncate">{roomMode ? `${formatRoom(locationCode)} · کل اتاق` : formatLocation(locationCode)}</div>
+          <div className="text-xs text-white/75">{profile?.fullName} · {toPersianDigits(done.length)} جنس ثبت شد</div>
         </div>
-        <div className="text-left hidden sm:block">
-          <div className="text-xs text-white/70">{profile?.fullName}</div>
-          <div className="text-xs">{toPersianDigits(done.length)} جنس ثبت‌شده</div>
-        </div>
-        <div className="flex items-center gap-2"><IShield className="w-9 h-9 text-accent" /><div className="leading-tight"><div className="font-extrabold">شمارش موجودی انبار</div><div className="text-[11px] text-white/70">مرجع اکسل · دقیق · مطمئن</div></div></div>
       </header>
 
       <div className="p-4 space-y-4 max-w-4xl mx-auto">
+        <ol className="flex items-stretch gap-2 text-sm" aria-label="مراحل شمارش">
+          {['بارکد را اسکن کنید', 'تعداد را بررسی کنید', '«این جنس تمام شد» را بزنید'].map((t, i) => {
+            const active = (gKey ? 2 : 1) === i + 1; const next = !!gKey && i === 2;
+            return (
+              <li key={t} className={`flex-1 rounded-btn px-3 py-2 flex items-center gap-2 border ${active ? 'bg-accent text-white border-accent font-bold' : next ? 'bg-surface text-accent border-accent' : 'bg-surface text-muted border-primary/10'}`}>
+                <span className="w-6 h-6 shrink-0 rounded-full bg-black/10 flex items-center justify-center text-xs font-bold">{toPersianDigits(i + 1)}</span>{t}
+              </li>
+            );
+          })}
+        </ol>
         {roomMode && (() => {
           const need = shelves.filter(needsCount); const doneN = need.filter(isShelfDone).length;
           return (
@@ -449,17 +448,17 @@ export function CountingScreen({ locationCode, sessionId, onFinish, onExit }: { 
                 </div>
                 {r.product.locations.length > 1 && (
                   <div className="mt-3 border rounded-btn p-3 text-sm bg-bg">
-                    <div className="flex items-center gap-1 font-bold text-accent mb-1"><IPin className="w-4 h-4" />اطلاعات چندمکانی</div>
+                    <div className="flex items-center gap-1 font-bold text-accent mb-1"><IPin className="w-4 h-4" />این جنس دو محل دارد</div>
                     {r.product.locations.map(l => (
                       <div key={l.locationCode} className="flex justify-between py-0.5"><span dir="ltr">{l.locationCode}</span><span>عدد {toPersianDigits(l.expectedQty)}</span></div>
                     ))}
-                    <div className="border-t mt-1 pt-1 text-primary font-medium">مجموع مرجع: {toPersianDigits(refOf(r.product))} عدد — لطفاً هر دو مکان را بشمارید.</div>
+                    <div className="border-t mt-1 pt-1 text-primary font-medium">جمع موجودی اکسل: {toPersianDigits(refOf(r.product))} عدد — هر دو محل را بشمارید.</div>
                   </div>
                 )}
               </div>
             ))}
-            <p className="text-xs text-muted">برای تعداد زیاد، عدد را مستقیم در کادر شمارش بنویسید (ثبت دستی). اسکن بارکد سایز دیگرِ همین جنس به این فهرست اضافه می‌شود؛ بارکد جنس دیگر، این جنس را می‌بندد.</p>
-            <button onClick={() => { openSummary(null); }} className="w-full bg-primary text-white py-4 rounded-card font-extrabold text-xl min-h-[60px] flex items-center justify-center gap-2"><ICheck className="w-6 h-6" />پایان شمارش این کد</button>
+            <p className="text-xs text-muted">اسکن سایز دیگرِ همین جنس به فهرست اضافه می‌شود؛ اسکن جنس دیگر، این جنس را می‌بندد.</p>
+            <button onClick={() => { openSummary(null); }} className="w-full bg-primary text-white py-4 rounded-card font-extrabold text-xl min-h-[60px] flex items-center justify-center gap-2"><ICheck className="w-6 h-6" />این جنس تمام شد</button>
           </>
         ) : (
           <div className="text-center text-muted py-12 bg-surface/60 rounded-card border border-dashed">هنوز جنسی در حال شمارش نیست — اولین بارکد را اسکن کنید</div>
@@ -480,11 +479,11 @@ export function CountingScreen({ locationCode, sessionId, onFinish, onExit }: { 
       <div className="fixed bottom-0 inset-x-0 p-4 bg-gradient-to-t from-bg via-bg to-transparent">
         {roomMode ? (
           <div className="max-w-4xl mx-auto flex gap-2">
-            <button onClick={finishLocation} disabled={!!modal || !shelf} className="flex-1 bg-accent text-white py-3.5 rounded-card font-extrabold min-h-[52px] shadow-card disabled:opacity-40">اتمام این محل فیزیکی</button>
-            <button onClick={requestFinishRoom} disabled={!!modal} className="bg-primary text-white px-5 py-3.5 rounded-card font-bold min-h-[52px] shadow-card disabled:opacity-40">پایان اتاق</button>
+            <button onClick={finishLocation} disabled={!!modal || !shelf} className="flex-1 bg-accent text-white py-3.5 rounded-card font-extrabold min-h-[52px] shadow-card disabled:opacity-40">این قفسه تمام شد</button>
+            <button onClick={requestFinishRoom} disabled={!!modal} className="bg-primary text-white px-5 py-3.5 rounded-card font-bold min-h-[52px] shadow-card disabled:opacity-40">کل اتاق تمام شد</button>
           </div>
         ) : (
-          <button onClick={finishLocation} disabled={!!modal} className="w-full max-w-4xl mx-auto block bg-accent text-white py-3.5 rounded-card font-extrabold min-h-[52px] shadow-card">اتمام این محل فیزیکی</button>
+          <button onClick={finishLocation} disabled={!!modal} className="w-full max-w-4xl mx-auto block bg-accent text-white py-3.5 rounded-card font-extrabold min-h-[52px] shadow-card">این قفسه تمام شد</button>
         )}
       </div>
 
@@ -492,21 +491,22 @@ export function CountingScreen({ locationCode, sessionId, onFinish, onExit }: { 
         <Overlay>
           <div className="text-center mb-3">
             <div className={`w-16 h-16 rounded-full mx-auto flex items-center justify-center text-white ${allMatch ? 'bg-success' : 'bg-system'}`}>{allMatch ? <ICheck className="w-9 h-9" /> : <IBox className="w-9 h-9" />}</div>
-            <h3 className="text-2xl font-extrabold text-primary mt-2">{allMatch ? 'مطابقت کامل' : 'مغایرت شناسایی شد'}</h3>
-            <p className="text-sm text-muted">{allMatch ? 'تعداد اقلام فیزیکی با فایل اکسل مطابقت دارد.' : 'نتیجهٔ این جنس به ترتیب سایز'}</p>
+            <h3 className="text-2xl font-extrabold text-primary mt-2">{allMatch ? 'همه‌چیز درست است' : 'با سیستم فرق دارد'}</h3>
+            <p className="text-sm text-muted">{allMatch ? 'تعداد شمارش‌شده با اکسل یکی است.' : 'هر سایز را ببینید و تأیید را بزنید.'}</p>
           </div>
           <div className="space-y-2 mb-3">
             {modal.lines.map(l => (
               <div key={l.product.barcode} className={`border-2 rounded-btn p-3 flex items-center gap-3 ${tone[l.type]}`}>
                 <div className="text-xl font-extrabold w-14 text-center">{l.product.size}</div>
-                <div className="text-sm flex-1 text-text">فیزیکی {toPersianDigits(l.physical)} · اکسل {toPersianDigits(l.ref)} · اختلاف {toPersianDigits(l.diff)}</div>
-                <div className="font-bold text-sm">{label[l.type]}{l.diff !== 0 && ` ${toPersianDigits(Math.abs(l.diff))}`}</div>
+                <div className="flex-1">
+                  <div className="font-extrabold">{RES_ICON[l.type]} {resultPhrase(l.type, l.diff)}</div>
+                  <div className="text-xs text-text/80">شمارش شما {toPersianDigits(l.physical)} · اکسل {toPersianDigits(l.ref)}{resultHint(l.type) ? ` · ${resultHint(l.type)}` : ''}</div>
+                </div>
               </div>
             ))}
           </div>
-          {!allMatch && <ul className="text-sm list-disc pr-5 mb-4 space-y-0.5">{modal.lines.map(l => <li key={l.product.barcode}>{sentence(l)}</li>)}</ul>}
           <button onClick={confirmSummary} className="w-full bg-success text-white py-3.5 rounded-btn font-extrabold min-h-[52px] flex items-center justify-center gap-2"><ICheck className="w-5 h-5" />تأیید و ادامه</button>
-          <button onClick={backToCounting} className="w-full mt-2 border py-3 rounded-btn min-h-[48px]">بازگشت برای شمارش مجدد</button>
+          <button onClick={backToCounting} className="w-full mt-2 border py-3 rounded-btn min-h-[48px]">برگشت و دوباره شمردن</button>
         </Overlay>
       )}
 
@@ -555,7 +555,7 @@ export function CountingScreen({ locationCode, sessionId, onFinish, onExit }: { 
 
       {modal?.type === 'roomEnd' && (
         <Overlay>
-          <h3 className="text-lg font-bold text-primary mb-1">پایان شمارش اتاق</h3>
+          <h3 className="text-lg font-bold text-primary mb-1">تمام شدن اتاق</h3>
           {modal.left.length === 0 ? (
             <p className="text-sm text-success mb-4">همهٔ قفسه‌های این اتاق شمارش شده‌اند.</p>
           ) : (
@@ -571,15 +571,15 @@ export function CountingScreen({ locationCode, sessionId, onFinish, onExit }: { 
               </div>
             </>
           )}
-          <button onClick={finishRoom} className="w-full bg-success text-white py-3 rounded-btn font-bold min-h-[48px]">پایان اتاق</button>
+          <button onClick={finishRoom} className="w-full bg-success text-white py-3 rounded-btn font-bold min-h-[48px]">کل اتاق تمام شد</button>
           <button onClick={() => setModal(null)} className="w-full mt-2 border py-3 rounded-btn min-h-[48px]">بازگشت به شمارش</button>
         </Overlay>
       )}
 
       {modal?.type === 'unscanned' && (
         <Overlay>
-          <h3 className="text-lg font-bold text-danger mb-1">کدهای اسکن‌نشده</h3>
-          <p className="text-sm text-muted mb-3">این کدها در اکسل در این محل موجودی دارند ولی اسکن نشده‌اند. اگر در انبار نیستند، مغایرت سیستمی (کسر از سیستم) ثبت کنید.</p>
+          <h3 className="text-lg font-bold text-danger mb-1">این‌ها اسکن نشدند</h3>
+          <p className="text-sm text-muted mb-3">طبق اکسل این‌ها در این قفسه هستند ولی اسکن نشدند. اگر واقعاً در قفسه نیستند، آن‌ها را «کم است» ثبت کنید (از سیستم کم می‌شود).</p>
           <div className="max-h-64 overflow-auto space-y-2 mb-4">
             {modal.items.map(p => (
               <label key={p.id} className="flex items-start gap-3 border rounded-btn p-2 text-sm">
@@ -595,7 +595,7 @@ export function CountingScreen({ locationCode, sessionId, onFinish, onExit }: { 
             ))}
           </div>
           <button onClick={() => setModal(null)} className="w-full bg-primary text-white py-3 rounded-btn font-bold min-h-[48px]">ادامه اسکن</button>
-          <button onClick={registerUnscanned} className="w-full mt-2 bg-system text-white py-3 rounded-btn font-bold min-h-[48px]">ثبت مغایرت سیستمی (انتخاب‌شده‌ها) و اتمام محل</button>
+          <button onClick={registerUnscanned} className="w-full mt-2 bg-system text-white py-3 rounded-btn font-bold min-h-[48px]">ثبت «کم است» برای انتخاب‌شده‌ها و تمام کردن قفسه</button>
         </Overlay>
       )}
     </div>

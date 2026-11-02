@@ -105,10 +105,18 @@ export function WelcomeScreen() {
             <input className="w-full border border-primary/15 rounded-btn px-4 py-3 bg-surface" placeholder="نام خانوادگی خود را وارد کنید" value={last} onChange={e => setLast(e.target.value)} />
             {errors.last && <p className="text-danger text-xs mt-1">{errors.last}</p>}
           </div>
-          <label className="flex items-center gap-3 cursor-pointer">
-            <input type="checkbox" checked={isManager} onChange={e => setIsManager(e.target.checked)} className="w-5 h-5 accent-primary" />
-            <span>من مدیر هستم</span>
-          </label>
+          <div>
+            <div className="block text-sm font-medium mb-1.5" id="role-label">نقش شما</div>
+            <div className="grid grid-cols-2 gap-3" role="radiogroup" aria-labelledby="role-label">
+              {([[false, 'انباردار', 'شمارش و ثبت'], [true, 'مدیر', 'تأیید و گزارش']] as const).map(([m, t, sub]) => (
+                <button key={t} type="button" role="radio" aria-checked={isManager === m} onClick={() => setIsManager(m)}
+                  className={`rounded-card border-2 py-4 px-3 min-h-[76px] text-center transition-colors ${isManager === m ? 'bg-primary text-white border-primary' : 'bg-surface text-primary border-primary/20'}`}>
+                  <div className="text-xl font-extrabold">{t}</div>
+                  <div className={`text-xs ${isManager === m ? 'text-white/80' : 'text-muted'}`}>{sub}</div>
+                </button>
+              ))}
+            </div>
+          </div>
           <button type="submit" className="w-full bg-primary text-white py-3.5 rounded-btn font-bold text-lg min-h-[52px]">ورود به برنامه</button>
         </div>
         <p className="text-center text-muted text-xs mt-5">همه اقدامات شما با نام و نقش شما در گزارش‌ها ثبت می‌شود.</p>
@@ -204,8 +212,9 @@ export function HomeScreen({ onNav, onResume }: { onNav: (s: string) => void; on
         </button>
       )}
       {hasExcel && <p className="text-xs text-muted text-center mt-2">نکته: برچسب ۸ رقمی قفسه را اسکن کنید تا شمارش همان‌جا شروع شود.</p>}
+      <button onClick={() => onNav('practice')} className="mt-3 w-full text-primary underline text-sm min-h-[44px]">اولین بار است؟ یک نمونهٔ آزمایشی را امتحان کنید (چیزی ثبت نمی‌شود)</button>
       <div className="grid grid-cols-3 gap-3 my-4">
-        <StatCard Icon={ICalendar} label="سشن‌های امروز" value={stats.sessionsToday || 0} cls="text-primary" />
+        <StatCard Icon={ICalendar} label="قفسه‌های امروز" value={stats.sessionsToday || 0} cls="text-primary" />
         <StatCard Icon={IBox2} label="قلم‌های شمارش‌شده امروز" value={stats.itemsToday || 0} cls="text-accent" />
         <StatCard Icon={IClock} label="در انتظار تأیید مدیر" value={stats.pending || 0} cls="text-system" />
       </div>
@@ -286,14 +295,14 @@ export function ImportScreen({ onDone }: { onDone: () => void }) {
   if (loading || (activating && !error && !summary)) return <div className="p-10 text-center text-primary font-medium">{activating ? 'در حال فعال‌سازی اکسل…' : 'در حال اعتبارسنجی اکسل…'}</div>;
   return (
     <div className="p-5 max-w-2xl mx-auto pb-20">
-      <h2 className="text-2xl font-extrabold text-primary mb-4">{mode === 'update' ? 'آپدیت اکسل' : 'نتیجه اعتبارسنجی اکسل'}</h2>
+      <h2 className="text-2xl font-extrabold text-primary mb-4">{mode === 'update' ? 'آپدیت اکسل' : 'بررسی فایل اکسل'}</h2>
       {error && <div className="bg-danger/10 border border-danger/30 text-danger p-4 rounded-card mb-4 whitespace-pre-wrap max-h-48 overflow-auto" role="alert">{error}</div>}
       {summary && !error && (
         <div className="bg-surface rounded-card shadow-card p-5 space-y-2 mb-4 text-sm">
           <div className="grid grid-cols-2 gap-2">
             <Info t="کل ردیف‌ها" v={summary.totalRows} /><Info t="فعال" v={summary.activeRows} />
-            <Info t="غیرفعال" v={summary.inactiveRows ?? 0} /><Info t="مکان‌ها" v={summary.locationCount} />
-            <Info t="کالاهای دومکانه" v={summary.multiLocationRows} /><Info t="SKU یکتا" v={summary.uniqueSkus} />
+            <Info t="غیرفعال" v={summary.inactiveRows ?? 0} /><Info t="محل‌ها" v={summary.locationCount} />
+            <Info t="کالاهای دارای دو محل" v={summary.multiLocationRows} /><Info t="کالای متفاوت" v={summary.uniqueSkus} />
           </div>
           {diff?.hasActive && (
             <div className="mt-3 border-t pt-3">

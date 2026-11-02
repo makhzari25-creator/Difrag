@@ -5,6 +5,7 @@ import { useScanner } from './hooks/useScanner';
 import { WelcomeScreen, HomeScreen, ImportScreen, LocationsScreen, Nav, ToastContainer } from './screensA';
 import { ReportsScreen, ProfileScreen } from './screensB';
 import { CountingScreen } from './counting';
+import { PracticeScreen } from './practice';
 
 export default function App() {
   const { profile, screen, setScreen, excelVersion, setCurrentSession, setCurrentLocation, currentSession, currentLocation, userId, addToast } = useAppStore();
@@ -57,6 +58,7 @@ export default function App() {
   };
 
   if (!profile || screen === 'welcome') return <><WelcomeScreen /><ToastContainer /></>;
+  if (screen === 'practice') return <PracticeScreen onDone={() => setScreen('home')} />;
   if (screen === 'import') return <><ImportScreen onDone={() => setScreen('home')} /><ToastContainer /></>;
   if (counting && currentSession && currentLocation) return (
     <>

@@ -2,7 +2,7 @@ name: Build Windows EXE
 
 on:
   push:
-    branches: [main, master, stages1-6]
+    branches: [main, master, stages1-6, feature/room-counting]
   workflow_dispatch:
 
 permissions:
@@ -52,7 +52,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Publish release (direct download links)
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feature/room-counting'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -60,10 +60,17 @@ jobs:
           cd dist
           sha256sum Difrag-Setup-*.exe Difrag-Portable-*.exe > SHA256SUMS.txt
           cat SHA256SUMS.txt
-          gh release create "build-4821-${{ github.run_number }}" Difrag-Setup-*.exe Difrag-Portable-*.exe SHA256SUMS.txt \
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            TAG="build-4821-${{ github.run_number }}"; FLAG="--latest"; TITLE="Difrag 1.0.0 (Build 4821) #${{ github.run_number }}"
+            NOTES="Windows installer and portable build. Verify with SHA256SUMS.txt."
+          else
+            # test build from a feature branch: pre-release, never marked as the latest release
+            TAG="test-room-counting-${{ github.run_number }}"; FLAG="--prerelease"; TITLE="TEST (room counting branch) #${{ github.run_number }}"
+            NOTES="Test build from branch feature/room-counting (commit ${{ github.sha }}). Not for production. Verify with SHA256SUMS.txt."
+          fi
+          gh release create "$TAG" Difrag-Setup-*.exe Difrag-Portable-*.exe SHA256SUMS.txt \
             --repo "${{ github.repository }}" --target "${{ github.sha }}" \
-            --title "Difrag 1.0.0 (Build 4821) #${{ github.run_number }}" \
-            --notes "Windows installer and portable build. Verify with SHA256SUMS.txt." --latest
+            --title "$TITLE" --notes "$NOTES" $FLAG
 
       - name: List dist
         run: dir dist
